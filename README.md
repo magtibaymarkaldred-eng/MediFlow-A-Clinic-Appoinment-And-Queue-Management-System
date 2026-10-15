@@ -1,1 +1,1 @@
-# MediFlow-A-Clinic-Appoinment-And-Queue-Management-System
+# MediQueue-A-Clinic-Appoinment-And-Queue-Management-System
