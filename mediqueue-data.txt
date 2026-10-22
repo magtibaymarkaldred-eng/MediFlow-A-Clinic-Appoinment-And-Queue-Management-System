@@ -1,0 +1,22 @@
+N|1005|7
+A|A-1001|Juan Dela Cruz|Dr. Maria Santos|2026-10-22|09:00|In Consultation
+A|A-1002|Maria Lopez|Dr. Pedro Reyes|2026-10-22|09:30|In Consultation
+A|A-1003|Carlo Santos|Dr. Ana Aquino|2026-10-22|10:00|Waiting
+A|A-1004|Ana Rivera|Dr. Maria Santos|2026-10-22|10:30|Waiting
+A|A-1005|Maria Villanueva|Dr. Pedro Reyes|2026-10-22|11:00|Scheduled
+Q|Juan Dela Cruz|Dr. Maria Santos|In Consultation
+Q|Maria Lopez|Dr. Pedro Reyes|In Consultation
+Q|Carlo Santos|Dr. Ana Aquino|Waiting
+Q|Ana Rivera|Dr. Maria Santos|Waiting
+P|P-001|Juan Dela Cruz|34|Male|0917 123 4567|Oct 22, 2026
+P|P-002|Maria Lopez|29|Female|0918 765 4321|Oct 22, 2026
+P|P-003|Carlo Santos|41|Male|0922 345 6789|Oct 21, 2026
+P|P-004|Ana Rivera|26|Female|0933 456 7890|Oct 21, 2026
+P|P-005|Maria Villanueva|52|Female|0945 678 1234|Oct 20, 2026
+S|1|Dr. Maria Santos|2026-10-22|9:00 AM - 3:00 PM|true
+S|2|Dr. Pedro Reyes|2026-10-22|9:00 AM - 4:00 PM|true
+S|3|Dr. Juan Cruz|2026-10-22|10:00 AM - 2:00 PM|true
+S|4|Dr. Ana Aquino|2026-10-22|9:00 AM - 12:00 PM|true
+S|5|Dr. Maria Santos|2026-10-24|9:00 AM - 12:00 PM|true
+S|6|Dr. Maria Santos|2026-10-26|9:00 AM - 3:00 PM|false
+S|7|Dr. Pedro Reyes|2026-10-23|9:00 AM - 4:00 PM|true
