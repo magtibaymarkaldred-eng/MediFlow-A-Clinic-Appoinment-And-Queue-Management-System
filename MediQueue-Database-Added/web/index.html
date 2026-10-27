@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MediQueue | Clinic Appointment & Queue System</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="loginView" class="login-shell">
+    <section class="login-brand">
+      <div class="brand-mark">M</div>
+      <p class="eyebrow">CLINIC MANAGEMENT</p>
+      <h1>MediQueue</h1>
+      <p class="brand-copy">A simpler way to manage appointments, patients, and the clinic queue.</p>
+      <div class="brand-points"><span>✓ Appointment booking</span><span>✓ Queue monitoring</span><span>✓ Doctor schedules</span></div>
+    </section>
+    <section class="login-panel">
+      <div class="login-card">
+        <p class="eyebrow">WELCOME BACK</p>
+        <h2>Sign in to MediQueue</h2>
+        <p class="muted">Enter your account details to continue.</p>
+        <form id="loginForm">
+          <label for="loginUsername">Username</label>
+          <input id="loginUsername" autocomplete="username" required placeholder="Enter username">
+          <label for="loginPassword">Password</label>
+          <input id="loginPassword" type="password" autocomplete="current-password" required placeholder="Enter password">
+          <p id="loginError" class="error" aria-live="polite"></p>
+          <button class="btn primary full" type="submit">Sign in <span>→</span></button>
+        </form>
+        <div class="login-foot">For patients, use the account provided by your clinic administrator.</div>
+      </div>
+    </section>
+  </div>
+
+  <div id="appView" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="side-brand"><div class="brand-mark small">M</div><div><strong>MediQueue</strong><small>Clinic system</small></div></div>
+      <div class="side-label">WORKSPACE</div>
+      <nav id="sideNav"></nav>
+      <div class="sidebar-bottom"><div class="online-dot"></div><span>Local demo mode</span></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div><p class="eyebrow" id="pageEyebrow">CLINIC WORKSPACE</p><h1 id="pageTitle">Overview</h1></div><div class="top-user"><div class="user-avatar" id="userAvatar">A</div><div><strong id="topUserName">Admin</strong><small id="topUserRole">Administrator</small></div><button id="logoutBtn" class="btn light">Sign out</button></div></header>
+      <div id="pageContent" class="page-content"></div>
+      <footer>© <span id="year"></span> MediQueue · Clinic Appointment & Queue System</footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

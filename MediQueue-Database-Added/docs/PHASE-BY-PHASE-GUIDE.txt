@@ -1,0 +1,2852 @@
+MediQueue Web: Phase-by-Phase Build Guide
+Oct 22, 2026 · @Potzzzzz
+Before you start
+By the end of this guide, MediQueue runs as a website: the same clinic app, with your Java code as the backend and a browser page as the frontend. You build it in 11 phases, and each phase ends with a checkpoint you test before moving on.
+
+How MediQueue Web fits together · 6 parts
+MediQueueData.java, the highlighted box, comes from the desktop project unchanged, and MediQueue.java beside it stays the desktop app. Phases 2 to 4 build the server side, Phases 5 to 9 the browser side, and Phase 10 packs everything into two .jar files.
+What you need
+•JDK 17 or newer. In a terminal, java -version and javac -version should both print a version.
+•VS Code (or any editor) with a terminal open in your project folder: Terminal > New Terminal.
+•A web browser, such as Chrome or Edge.
+•The original project from GitHub: the MediQueue-Project folder with src/MediQueue.java and src/MediQueueData.java.
+•curl for the server tests in Phase 4. It comes with Windows 10/11 (type it as curl.exe) and with macOS.
+The finished project
+File	Phase	What it does
+src/MediQueueData.java	1	Data, password hashing, saving to text files. Copied from the desktop app, unchanged
+src/MediQueue.java	1	The original Swing desktop app, unchanged
+.gitignore	1	Keeps compiled classes and saved data out of Git
+src/Json.java	2	Turns Java maps and lists into JSON text for the browser
+src/MediQueueService.java	3	The clinic rules, moved out of the desktop button handlers
+src/MediQueueWeb.java	4	The web server: sends the pages, answers /api/... requests, remembers who is signed in
+web/index.html, web/favicon.svg, web/app.css	5	The page itself, its tab icon and its styles
+web/app.js	6 to 9	Draws every screen and talks to the server
+build.bat, build.sh, run.bat, run.sh	10	Build both .jar files and start the server
+README.md, docs/PROJECT-OVERVIEW.md	10	Project documentation
+How to follow the phases
+1.Do the phases in order. Each one builds on the files from the phase before.
+2.Put every code block in the file named right above it, exactly as shown. Copying is safer than retyping.
+3.When a step says paste above the last }, put the code inside the class, just before its final closing brace.
+4.Run the checkpoint at the end of each phase. If it does not match, fix that first; the next phase depends on it.
+5.Commands work in VS Code's terminal on Windows, macOS and Linux. Where Windows needs something different, the step says so.
+If you get stuck, compare your file with the same file in MediQueue-Web.zip.
+Phase 1: Set up the project
+Phase 1 gives you a project folder with the two desktop files, and proves they still compile and run before you change anything.
+Step 1.1: Create the folders
+In VS Code, open the folder where you keep your projects, open a terminal, and run the command for your system. You can also make the folders with the New Folder button in VS Code's Explorer.
+Windows (PowerShell, the VS Code default):
+mkdir MediQueue-Web\src, MediQueue-Web\web, MediQueue-Web\docs
+macOS or Linux:
+mkdir -p MediQueue-Web/src MediQueue-Web/web MediQueue-Web/docs
+Then choose File > Open Folder, open MediQueue-Web, and open a new terminal. Every command from here on runs in this folder.
+Step 1.2: Copy the two desktop files
+Copy MediQueueData.java and MediQueue.java from MediQueue-Project/src/ into MediQueue-Web/src/. Do not change them. If you don't have the project on your computer yet, download it first:
+git clone https://github.com/magtibaymarkaldred-eng/MediQueue-A-Clinic-Appointment-and-Queue-Management-System.git
+•MediQueueData.java holds the data lists, the accounts and password hashing, and the code that saves to mediqueue-data.txt and mediqueue-users.txt. It becomes the web server's data layer, unchanged.
+•MediQueue.java is the Swing window. The web version does not use it, but keeping it means the desktop app still builds from the same folder.
+Step 1.3: Create .gitignore
+Create a file named .gitignore in the MediQueue-Web folder. It keeps compiled files and saved data out of GitHub:
+# compiled classes (rebuilt by build.bat / build.sh)
+build/
+
+# the app's saved data: patient records and password hashes stay out of Git
+mediqueue-data.txt
+mediqueue-users.txt
+Checkpoint 1
+Compile the two files and start the desktop app:
+javac --release 17 -encoding UTF-8 -d build src/MediQueueData.java src/MediQueue.java
+java -cp build mediqueue.MediQueue
+•☐ javac prints nothing. No output means no errors.
+•☐ The MediQueue window opens. Sign in on the Admin tab with aldred / aldred06, then close the window.
+•☐ Two new files appear in the folder, mediqueue-data.txt and mediqueue-users.txt. They hold the app's saved data, and .gitignore keeps them out of Git.
+Phase 2: Json.java
+The browser and the server talk in JSON, a text format for data. Java has no built-in JSON writer and this project uses no libraries, so Phase 2 adds a small one of its own.
+Two answers the server will send later, the second one shortened:
+{"error":"That slot is already booked. Pick another time."}
+{"ok":true,"message":"Appointment confirmed.","tone":"green","state":{...}}
+Step 2.1: Create src/Json.java
+package mediqueue;
+
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * A very small JSON writer, so the web server needs no extra libraries.
+ * It turns Maps, Lists, Strings, numbers and booleans into the JSON text that the browser reads.
+ *
+ *   Json.write(Json.obj("name", "Ana", "age", 26))   gives   {"name":"Ana","age":26}
+ */
+final class Json {
+    private Json() { }
+
+    /** Builds an ordered map from key/value pairs:  obj("name", "Ana", "age", 26). */
+    static Map<String, Object> obj(Object... keysAndValues) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < keysAndValues.length; i += 2) m.put(String.valueOf(keysAndValues[i]), keysAndValues[i + 1]);
+        return m;
+    }
+
+    /** Converts a value (and everything inside it) to JSON text. */
+    static String write(Object value) {
+        StringBuilder sb = new StringBuilder();
+        append(sb, value);
+        return sb.toString();
+    }
+
+    private static void append(StringBuilder sb, Object v) {
+        if (v == null) {
+            sb.append("null");
+        } else if (v instanceof String) {
+            quote(sb, (String) v);
+        } else if (v instanceof Number || v instanceof Boolean) {
+            sb.append(v);
+        } else if (v instanceof Map) {
+            sb.append('{');
+            boolean first = true;
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) v).entrySet()) {
+                if (!first) sb.append(',');
+                first = false;
+                quote(sb, String.valueOf(e.getKey()));
+                sb.append(':');
+                append(sb, e.getValue());
+            }
+            sb.append('}');
+        } else if (v instanceof Iterable) {
+            sb.append('[');
+            boolean first = true;
+            for (Object item : (Iterable<?>) v) {
+                if (!first) sb.append(',');
+                first = false;
+                append(sb, item);
+            }
+            sb.append(']');
+        } else if (v instanceof Object[]) {
+            append(sb, Arrays.asList((Object[]) v));
+        } else {
+            quote(sb, v.toString());
+        }
+    }
+
+    /** Writes a string in quotes, escaping the characters JSON does not allow as-is. */
+    private static void quote(StringBuilder sb, String s) {
+        sb.append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"': sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    // Control characters, plus < > & as an extra precaution, are written as numbered escape codes.
+                    if (c < 0x20 || c == '<' || c == '>' || c == '&' || c == 0x2028 || c == 0x2029) sb.append(String.format("\\u%04x", (int) c));
+                    else sb.append(c);
+            }
+        }
+        sb.append('"');
+    }
+}
+How it works:
+•obj("name", "Ana", "age", 26) builds a map that keeps the keys in the order you gave them, so the JSON always reads the same way.
+•write(value) walks through maps, lists, strings, numbers and booleans, and builds the JSON text.
+•quote(...) wraps a string in quotes and escapes the characters JSON does not allow as-is, such as " and line breaks.
+•The class is not public: only classes in the mediqueue package use it.
+Checkpoint 2
+javac --release 17 -encoding UTF-8 -d build src/MediQueueData.java src/MediQueue.java src/Json.java
+•☐ No output: the new file compiles.
+Phase 3: MediQueueService.java
+Phase 3 moves the clinic rules out of the desktop screens. In MediQueue.java, each rule sits in a button handler that reads text fields and shows an error label. A web server has no text fields, so each rule becomes a plain method: values in, a result out, or a UserError with the desktop's exact message.
+Desktop (MediQueue.java)	Web (MediQueueService.java)
+doLogin()	login()
+doRegister()	register()
+doReset()	resetPassword()
+startSession()	startSession()
+book()	book()
+Yes in cancelDialog()	cancel()
+Confirm button in wAppMgmt()	confirm()
+Call Next Patient in wQueueMgmt()	callNext()
+Call and Complete buttons in wQueueMgmt()	callPatient(), completePatient()
+Save in patientDialog()	savePatient()
+Delete in fillPatientTable()	deletePatient()
+Add in scheduleDialog()	addSchedule()
+Mark Off, Mark On and Remove in wSchedMgmt()	toggleSchedule(), removeSchedule()
+wMyAppts(), wQueue(), adminStats() and the other screen builders	stateFor()
+Step 3.1 creates the file. Steps 3.2 to 3.6 each add one part: paste each part inside the class, just above its last }. Compile once, at Checkpoint 3: the parts call each other, so the file only compiles when all six are in.
+Step 3.1: Create src/MediQueueService.java
+package mediqueue;
+
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.TextStyle;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+import static mediqueue.Json.obj;
+import static mediqueue.MediQueueData.*;
+
+/**
+ * MediQueue's clinic rules, taken out of the desktop screens so the web server can use them.
+ *
+ * In the desktop app (MediQueue.java) these rules sit inside button handlers such as doLogin(), doRegister()
+ * and book(). Here every rule is a plain method: it returns a result, or throws a UserError carrying the same
+ * message the desktop app shows. The data itself still lives in MediQueueData (the lists and the two text
+ * files), which is used without any changes.
+ *
+ * Only one request may touch the data at a time, so callers hold the lock on MediQueueData.class
+ * (MediQueueWeb does this for every request).
+ */
+final class MediQueueService {
+    private MediQueueService() { }
+
+    /** A problem the user can fix, such as a wrong password or a time slot that is taken. Its message is shown on screen. */
+    static final class UserError extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        final int status;   // the HTTP status code sent to the browser (400 = bad input, 403 = not allowed, ...)
+        UserError(String message) { this(400, message); }
+        UserError(int status, String message) { super(message); this.status = status; }
+    }
+
+    static final String FEE = "₱100.00";
+    static final int DAYS_AHEAD = 60;   // the desktop date lists offer the next 60 days
+    static final List<String> SLOT_CHOICES = Arrays.asList("9:00 AM - 12:00 PM", "9:00 AM - 3:00 PM", "10:00 AM - 2:00 PM", "1:00 PM - 5:00 PM");
+    static final List<String> GENDERS = Arrays.asList("Female", "Male", "Other");
+    static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
+    private static final String UNKNOWN_USER_SALT = newSalt();
+}
+import static mediqueue.MediQueueData.*; lets this class use APPTS, QUEUE, PATS, SCHEDS, ACCOUNTS and the helper methods of MediQueueData directly, the same way MediQueue.java does. UserError carries the message for the screen plus an HTTP status code: 400 for bad input, 403 for not allowed, 404 for not found.
+Step 3.2: Accounts
+Paste above the last }:
+    // =====================================================================
+    //  ACCOUNTS  (desktop: doLogin, doRegister, doReset, startSession)
+    // =====================================================================
+
+    static Account login(String username, String password, String role) {
+        Account a = ACCOUNTS.get(username.trim().toLowerCase());
+        // Hash the password even for an unknown username, so a wrong username takes as long as a wrong password.
+        String attempt = password.isEmpty() ? "" : hash(password, a != null ? a.salt : UNKNOWN_USER_SALT);
+        boolean ok = a != null && a.role.equals(role) && !password.isEmpty() && sameHash(a.hash, attempt);
+        if (!ok) throw new UserError("Invalid username or password.");
+        startSession(a);
+        return a;
+    }
+
+    static Account register(String nameIn, String contactIn, String userIn, String pw, String pw2) {
+        String name = clean(nameIn, 60), contact = clean(contactIn, 20), user = userIn.trim();
+        String problem = null;
+        if (name.length() < 2) problem = "Please enter your full name.";
+        else if (!contact.matches("[0-9+\\-\\s]{7,15}")) problem = "Enter a valid contact number (7-15 digits).";
+        else if (!user.matches("[A-Za-z0-9_.]{3,20}")) problem = "Username: 3-20 letters, numbers, . or _";
+        else if (pw.length() < 6) problem = "Password must be at least 6 characters.";
+        else if (!pw.equals(pw2)) problem = "Passwords do not match.";
+        else if (ACCOUNTS.containsKey(user.toLowerCase())) problem = "That username is already taken.";
+        else for (Account x : ACCOUNTS.values()) if (x.name.equalsIgnoreCase(name)) problem = "A patient with that name is already registered.";
+        // Web only: the clinic may already have a record with this exact name (added by staff). Anyone can open a
+        // website, so the contact number on that record must match before the new account is linked to it.
+        Pat record = recordOf(name);
+        if (problem == null && record != null && !digits(record.contact).equals(digits(contact)))
+            problem = "The clinic already has a record with that name. Use the contact number on file.";
+        if (problem != null) throw new UserError(problem);
+        Account a = makeAccount(user, "patient", name, contact, pw);
+        ACCOUNTS.put(user.toLowerCase(), a);
+        saveAccounts();
+        startSession(a);
+        return a;
+    }
+
+    /** Desktop doReset(): a patient proves who they are with the contact number they registered with. */
+    static Account resetPassword(String userIn, String contactIn, String pw, String pw2) {
+        Account a = ACCOUNTS.get(userIn.trim().toLowerCase());
+        if (a == null || !a.role.equals("patient") || a.contact.isEmpty() || !digits(a.contact).equals(digits(contactIn)))
+            throw new UserError("We could not verify that username and number.");
+        if (pw.length() < 6) throw new UserError("Password must be at least 6 characters.");
+        if (!pw.equals(pw2)) throw new UserError("Passwords do not match.");
+        Account updated = makeAccount(a.username, a.role, a.name, a.contact, pw);
+        ACCOUNTS.put(a.username.toLowerCase(), updated);
+        saveAccounts();
+        return updated;
+    }
+
+    /** Desktop startSession(): a patient's first sign-in also creates their clinic record. */
+    static void startSession(Account a) {
+        if (a.role.equals("patient") && recordOf(a.name) == null) {
+            PATS.add(pat(nextPatId(), a.name, "", "", a.contact, "-"));
+            saveData();
+        }
+    }
+The checks and messages are the desktop's. Two additions for the web: login hashes the password even when the username does not exist, so a wrong username takes as long as a wrong password; and register asks for the contact number on file when the name matches a clinic record, so nobody can register as "Juan Dela Cruz" and see his appointments.
+Step 3.3: Patient actions
+Paste above the last }:
+    // =====================================================================
+    //  PATIENT ACTIONS  (desktop: book, cancelDialog)
+    // =====================================================================
+
+    static Appt book(Account who, String doctorName, String dateText, String timeText) {
+        Doctor d = doctor(doctorName);
+        if (d == null) throw new UserError("Please choose a doctor.");
+        // The desktop lists only allowed these choices; a website must check them because anyone can send anything.
+        LocalDate date = toDate(dateText);
+        if (!withinNextDays(date)) throw new UserError("Please choose a date from the list.");
+        if (date.getDayOfWeek() == DayOfWeek.SUNDAY) throw new UserError("The clinic is closed on Sundays.");
+        LocalTime time = toTime(timeText);
+        if (time == null || !allSlots().contains(time)) throw new UserError("Please choose a time slot from the list.");
+        // The same three checks as the desktop book() method.
+        if (date.equals(LocalDate.now()) && !time.isAfter(LocalTime.now())) throw new UserError("That time has already passed today.");
+        for (Appt a : APPTS)
+            if (a.doc.equals(d.name) && a.date.equals(date) && a.time.equals(time) && !a.status.equals("Cancelled"))
+                throw new UserError("That slot is already booked. Pick another time.");
+        for (Sched s : SCHEDS)
+            if (s.doc.equals(d.name) && s.date.equals(date) && !s.ok) throw new UserError(d.name + " is not available on that date.");
+        Appt a = appt(who.name, d.name, date, time.toString(), "Scheduled");
+        APPTS.add(a);
+        saveData();
+        return a;
+    }
+
+    /** Patients may cancel their own appointments; clinic staff may cancel any appointment. */
+    static Appt cancel(Account who, String id) {
+        Appt a = findAppt(id);
+        if (a == null || !(isAdmin(who) || a.patient.equals(who.name))) throw new UserError(404, "Appointment not found.");
+        if (!live(a)) throw new UserError("This appointment can no longer be cancelled.");
+        a.status = "Cancelled";
+        saveData();
+        return a;
+    }
+The desktop's drop-down lists only offered valid choices. A web server must check every value itself, because anyone can send any value to /api/book. After those checks come the desktop's own three: the time has not passed, the slot is free, and the doctor is available that day. cancel lets a patient cancel only their own appointments.
+Step 3.4: Clinic staff actions
+Paste above the last }:
+    // =====================================================================
+    //  CLINIC STAFF ACTIONS  (desktop: wAppMgmt, wQueueMgmt, patientDialog, wSchedMgmt, scheduleDialog)
+    // =====================================================================
+
+    static Appt confirm(String id) {
+        Appt a = findAppt(id);
+        if (a == null) throw new UserError(404, "Appointment not found.");
+        if (!a.status.equals("Scheduled") && !a.status.equals("Upcoming")) throw new UserError("Only scheduled appointments can be confirmed.");
+        a.status = "Confirmed";
+        saveData();
+        return a;
+    }
+
+    /** "Call Next Patient": the first waiting patient goes in to see the doctor. */
+    static QEntry callNext() {
+        for (QEntry q : QUEUE)
+            if (q.status.equals("Next") || q.status.equals("Waiting")) {
+                q.status = "In Consultation";
+                saveData();
+                return q;
+            }
+        throw new UserError("No patients are waiting.");
+    }
+
+    static QEntry callPatient(int index, String name) {
+        QEntry q = queueEntry(index, name);
+        if (q.status.equals("In Consultation") || q.status.equals("Completed")) throw new UserError(q.name + " cannot be called right now.");
+        q.status = "In Consultation";
+        saveData();
+        return q;
+    }
+
+    static QEntry completePatient(int index, String name) {
+        QEntry q = queueEntry(index, name);
+        if (!q.status.equals("In Consultation")) throw new UserError(q.name + " is not in consultation.");
+        q.status = "Completed";
+        saveData();
+        return q;
+    }
+
+    /** Queue entries have no ID, so the page sends the row number and the name. Both must still match. */
+    private static QEntry queueEntry(int index, String name) {
+        if (index < 0 || index >= QUEUE.size() || !QUEUE.get(index).name.equals(name))
+            throw new UserError("The queue has changed. Please try again.");
+        return QUEUE.get(index);
+    }
+
+    /** Add Patient (when id is empty) or Edit Patient, with the same checks as the desktop patient dialog. */
+    static Pat savePatient(String id, String nameIn, String ageIn, String gender, String contactIn) {
+        String n = clean(nameIn, 60), c = clean(contactIn, 20), a = ageIn.trim();
+        if (n.isEmpty()) throw new UserError("Please enter the patient's name.");
+        if (!a.matches("\\d{1,3}") || Integer.parseInt(a) > 120) throw new UserError("Please enter a valid age (0-120).");
+        if (!c.matches("[0-9+\\-\\s]{7,15}")) throw new UserError("Please enter a valid contact number.");
+        if (!GENDERS.contains(gender)) throw new UserError("Please choose a gender.");
+        Pat p;
+        if (id.isEmpty()) {
+            p = pat(nextPatId(), n, a, "", c, "-");
+            PATS.add(p);
+        } else {
+            p = findPat(id);
+            if (p == null) throw new UserError(404, "Patient not found.");
+        }
+        p.name = n;
+        p.age = a;
+        p.contact = c;
+        p.gender = gender;
+        saveData();
+        return p;
+    }
+
+    static Pat deletePatient(String id) {
+        Pat p = findPat(id);
+        if (p == null) throw new UserError(404, "Patient not found.");
+        PATS.remove(p);
+        saveData();
+        return p;
+    }
+
+    static Sched addSchedule(String doctorName, String dateText, String slots) {
+        Doctor d = doctor(doctorName);
+        if (d == null) throw new UserError("Please choose a doctor.");
+        LocalDate date = toDate(dateText);
+        if (!withinNextDays(date)) throw new UserError("Please choose a date from the list.");
+        if (!SLOT_CHOICES.contains(slots)) throw new UserError("Please choose an available time.");
+        Sched s = sched(d.name, date, slots, true);
+        SCHEDS.add(s);
+        saveData();
+        return s;
+    }
+
+    static Sched toggleSchedule(int id) {
+        Sched s = findSched(id);
+        s.ok = !s.ok;
+        saveData();
+        return s;
+    }
+
+    static Sched removeSchedule(int id) {
+        Sched s = findSched(id);
+        SCHEDS.remove(s);
+        saveData();
+        return s;
+    }
+Queue entries have no ID in MediQueueData, so the page sends the row number and the patient's name, and queueEntry refuses the action if the queue changed in the meantime. savePatient adds a patient when id is empty and edits one otherwise.
+Step 3.5: Screen data
+Paste above the last }:
+    // =====================================================================
+    //  SCREEN DATA  (desktop: the w...() and stat() methods that fill each page)
+    // =====================================================================
+
+    /** Everything the signed-in user's pages need. The web server sends this to the browser as JSON. */
+    static Map<String, Object> stateFor(Account who) {
+        LocalDate today = LocalDate.now();
+        LocalTime now = LocalTime.now();
+        Map<String, Object> s = obj(
+                "user", obj("name", who.name, "firstName", firstName(who.name), "username", who.username,
+                            "role", who.role, "roleLabel", isAdmin(who) ? "Clinic Staff" : "Patient"),
+                "now", obj("date", today.toString(), "dateLabel", today.format(DATE_FMT), "time", now.format(CLOCK), "hour", now.getHour()),
+                "fee", FEE,
+                "doctors", doctorList());
+        if (isAdmin(who)) addStaffData(s, today);
+        else addPatientData(s, who, today);
+        return s;
+    }
+
+    private static void addPatientData(Map<String, Object> s, Account who, LocalDate today) {
+        List<Appt> mine = appointmentsOf(who.name);
+        Appt upcoming = null;
+        for (Appt a : mine) if (live(a) && !a.date.isBefore(today)) { upcoming = a; break; }
+        Pat record = recordOf(who.name);
+        int myNumber = queueNumberOf(who.name);
+
+        List<Object> rows = new ArrayList<>();
+        for (int i = 0; i < QUEUE.size(); i++) {
+            QEntry q = QUEUE.get(i);
+            boolean mineRow = i == myNumber - 1;
+            // Web only: other patients appear as "Juan C.", so patients see only their own full name.
+            rows.add(obj("no", i + 1, "name", mineRow ? q.name : shortName(q.name), "status", q.status, "mine", mineRow));
+        }
+
+        List<Object> doctorChoices = new ArrayList<>(), dates = new ArrayList<>(), times = new ArrayList<>();
+        for (Doctor d : DOCTORS) doctorChoices.add(obj("value", d.name, "label", d.name + " - " + d.spec));
+        for (int i = 0; i < DAYS_AHEAD; i++) {
+            LocalDate d = today.plusDays(i);
+            if (d.getDayOfWeek() != DayOfWeek.SUNDAY) dates.add(obj("value", d.toString(), "label", d.format(DAY_FMT)));
+        }
+        for (LocalTime t : allSlots()) times.add(obj("value", t.toString(), "label", t.format(TIME_FMT)));
+
+        s.put("profile", obj("name", who.name, "patientId", record == null ? "-" : record.id,
+                             "contact", record == null || record.contact.isEmpty() ? "-" : record.contact));
+        s.put("appointments", appointmentList(mine));
+        s.put("upcoming", upcoming == null ? null
+                : obj("date", upcoming.date.toString(), "dateLabel", upcoming.date.format(DATE_FMT), "doctor", upcoming.doc));
+        s.put("queue", obj("myNumber", myNumber, "rows", rows));
+        s.put("booking", obj("doctors", doctorChoices, "dates", dates, "times", times));
+    }
+
+    private static void addStaffData(Map<String, Object> s, LocalDate today) {
+        int current = 0;
+        for (int i = 0; i < QUEUE.size(); i++) if (QUEUE.get(i).status.equals("In Consultation")) current = i + 1;
+        int onDuty = 0;
+        for (Doctor d : DOCTORS)
+            for (Sched x : SCHEDS) if (x.doc.equals(d.name) && x.date.equals(today) && x.ok) { onDuty++; break; }
+        int active = 0, cancelled = 0;
+        for (Appt a : APPTS) {
+            if (live(a)) active++;
+            if (a.status.equals("Cancelled")) cancelled++;
+        }
+        s.put("stats", obj("appointments", APPTS.size(), "patients", PATS.size(), "currentQueue", current,
+                           "onDuty", onDuty, "doctorCount", DOCTORS.length));
+        s.put("summary", obj("active", active, "inQueue", count("Waiting", "Next"), "completed", count("Completed"), "cancelled", cancelled));
+        s.put("counters", obj("waiting", count("Waiting", "Next"), "inConsultation", count("In Consultation"), "completed", count("Completed")));
+        s.put("appointments", appointmentList(sortedAppts(APPTS)));
+
+        List<Object> rows = new ArrayList<>();
+        for (int i = 0; i < QUEUE.size(); i++) {
+            QEntry q = QUEUE.get(i);
+            rows.add(obj("index", i, "no", String.format("Q%03d", i + 1), "name", q.name, "doctor", q.doc, "status", q.status));
+        }
+        s.put("queue", obj("rows", rows));
+
+        List<Object> patients = new ArrayList<>();
+        for (Pat p : PATS)
+            patients.add(obj("id", p.id, "name", p.name, "age", p.age, "gender", p.gender, "contact", p.contact, "visit", p.visit));
+        s.put("patients", patients);
+
+        List<Sched> byDate = new ArrayList<>(SCHEDS);
+        byDate.sort(Comparator.comparing((Sched x) -> x.date));
+        List<Object> schedules = new ArrayList<>();
+        for (Sched x : byDate)
+            schedules.add(obj("id", x.id, "doctor", x.doc, "date", x.date.toString(), "dateLabel", x.date.format(DATE_FMT),
+                              "day", x.date.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.ENGLISH), "slots", x.slots, "ok", x.ok));
+        s.put("schedules", schedules);
+
+        List<Object> dates = new ArrayList<>();
+        for (int i = 0; i < DAYS_AHEAD; i++) {
+            LocalDate d = today.plusDays(i);
+            dates.add(obj("value", d.toString(), "label", d.format(DAY_FMT)));
+        }
+        s.put("scheduleOptions", obj("dates", dates, "slots", SLOT_CHOICES));
+    }
+
+    private static List<Object> appointmentList(List<Appt> appts) {
+        List<Object> out = new ArrayList<>();
+        for (Appt a : appts)
+            out.add(obj("id", a.id, "patient", a.patient, "doctor", a.doc, "spec", spec(a.doc),
+                        "date", a.date.toString(), "dateLabel", a.date.format(DATE_FMT),
+                        "month", a.date.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH).toUpperCase(Locale.ENGLISH),
+                        "day", String.format("%02d", a.date.getDayOfMonth()),
+                        "time", a.time.toString(), "timeLabel", a.time.format(TIME_FMT), "status", a.status,
+                        "live", live(a), "canConfirm", a.status.equals("Scheduled") || a.status.equals("Upcoming")));
+        return out;
+    }
+
+    private static List<Object> doctorList() {
+        List<Object> out = new ArrayList<>();
+        for (Doctor d : DOCTORS) out.add(obj("name", d.name, "spec", d.spec, "hours", d.hours));
+        return out;
+    }
+The desktop builds each page out of Swing components. The web server sends the data for every page at once instead: stateFor returns one map, "the state", with the user, today's date and time, the doctors, and either the patient's or the staff's data. The browser draws the pages from it in Phases 6 to 8. Patients get other patients' names shortened, so full names never leave the server.
+Step 3.6: Small helpers
+Paste above the last }:
+    // =====================================================================
+    //  SMALL HELPERS
+    // =====================================================================
+
+    static boolean isAdmin(Account a) { return a.role.equals("admin"); }
+    static String firstName(String name) { return name.split(" ")[0]; }
+    static String digits(String s) { return s.replaceAll("[^0-9+]", ""); }
+
+    /** "Juan Dela Cruz" becomes "Juan C." */
+    static String shortName(String name) {
+        String[] w = name.trim().split("\\s+");
+        return w.length < 2 ? w[0] : w[0] + " " + w[w.length - 1].charAt(0) + ".";
+    }
+
+    static Doctor doctor(String name) {
+        for (Doctor d : DOCTORS) if (d.name.equals(name)) return d;
+        return null;
+    }
+
+    static Appt findAppt(String id) {
+        for (Appt a : APPTS) if (a.id.equals(id)) return a;
+        return null;
+    }
+
+    static Pat findPat(String id) {
+        for (Pat p : PATS) if (p.id.equals(id)) return p;
+        return null;
+    }
+
+    static Sched findSched(int id) {
+        for (Sched s : SCHEDS) if (s.id == id) return s;
+        throw new UserError(404, "Schedule not found.");
+    }
+
+    /** The clinic record for a name (the last match, like the desktop Profile page). */
+    static Pat recordOf(String name) {
+        Pat found = null;
+        for (Pat p : PATS) if (p.name.equals(name)) found = p;
+        return found;
+    }
+
+    static List<Appt> appointmentsOf(String name) {
+        List<Appt> out = new ArrayList<>();
+        for (Appt a : sortedAppts(APPTS)) if (a.patient.equals(name)) out.add(a);
+        return out;
+    }
+
+    static int queueNumberOf(String name) {
+        for (int i = 0; i < QUEUE.size(); i++) if (QUEUE.get(i).name.equals(name)) return i + 1;
+        return 0;
+    }
+
+    /** True for today and the next 59 days, the same range the desktop date lists show. */
+    static boolean withinNextDays(LocalDate d) {
+        LocalDate today = LocalDate.now();
+        return d != null && !d.isBefore(today) && d.isBefore(today.plusDays(DAYS_AHEAD));
+    }
+
+    static LocalDate toDate(String s) {
+        try { return LocalDate.parse(s); } catch (RuntimeException e) { return null; }
+    }
+
+    static LocalTime toTime(String s) {
+        try { return LocalTime.parse(s); } catch (RuntimeException e) { return null; }
+    }
+
+    static int toInt(String s) {
+        try { return Integer.parseInt(s.trim()); } catch (RuntimeException e) { return -1; }
+    }
+toDate, toTime and toInt return null or -1 instead of crashing when the browser sends something that is not a date, time or number.
+Checkpoint 3
+javac --release 17 -encoding UTF-8 -d build src/MediQueueData.java src/MediQueue.java src/Json.java src/MediQueueService.java
+•☐ No output: all six parts are in place.
+If javac reports class, interface, enum, or record expected, a part landed below the class's last }; move it above. If it reports cannot find symbol, a part is missing or was cut short; compare that step with your file.
+Phase 4: MediQueueWeb.java
+The JDK comes with a small web server, com.sun.net.httpserver.HttpServer, so no Tomcat is needed. Phase 4 starts it on port 8080 and gives it two jobs: answer addresses that start with /api/ with JSON from MediQueueService, and send everything else as a file from the web folder.
+Step 4.1 creates the file; steps 4.2 to 4.6 each add one part above the class's last }. As in Phase 3, compile once at the end.
+Step 4.1: Create src/MediQueueWeb.java
+package mediqueue;
+
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.BindException;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+
+import static mediqueue.Json.obj;
+import static mediqueue.MediQueueData.*;
+import static mediqueue.MediQueueService.*;
+
+/**
+ * MediQueue Web - the clinic system as a website.
+ *
+ * This class starts a small web server that comes with the JDK (no Tomcat, Maven or libraries needed):
+ *   - Files in the web/ folder (index.html, app.css, app.js) are sent to the browser. They draw the screens.
+ *   - Addresses that start with /api/ run the clinic rules in MediQueueService and answer with JSON.
+ *   - MediQueueData saves everything to mediqueue-data.txt and mediqueue-users.txt, as in the desktop app.
+ *
+ * Run:  java -jar MediQueueWeb.jar           then open http://localhost:8080
+ *       java -jar MediQueueWeb.jar 9090      use a different port
+ *       java -jar MediQueueWeb.jar --lan     also let phones and other computers on your network open it
+ */
+public class MediQueueWeb {
+
+    static final String COOKIE = "mq_session";
+    static final long SESSION_LENGTH_MS = 12L * 60 * 60 * 1000;   // a sign-in lasts 12 hours
+    static final int MAX_BODY_BYTES = 16 * 1024;                   // forms are small; refuse anything bigger
+
+    /** Browser security rules for our pages: only load scripts and styles from this server. */
+    static final String CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            + "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+    static final Map<String, String> TYPES = Map.of(
+            "html", "text/html; charset=utf-8", "css", "text/css; charset=utf-8", "js", "text/javascript; charset=utf-8",
+            "svg", "image/svg+xml", "png", "image/png", "ico", "image/x-icon");
+
+    /** Who is signed in on a browser. The browser keeps a random token in a cookie; this remembers whose it is. */
+    static final class Session {
+        final String username;
+        final long started = System.currentTimeMillis();
+        Session(String username) { this.username = username; }
+        boolean expired() { return System.currentTimeMillis() - started > SESSION_LENGTH_MS; }
+    }
+    static final Map<String, Session> SESSIONS = new ConcurrentHashMap<>();
+    static final SecureRandom RANDOM = new SecureRandom();
+}
+TYPES tells the browser what kind of file it is receiving. CSP (Content Security Policy) tells the browser to run only scripts and styles that come from this server, which blocks injected code. SESSIONS remembers which username each sign-in token belongs to.
+Step 4.2: Start the server
+Paste above the last }:
+    // =====================================================================
+    //  START THE SERVER
+    // =====================================================================
+    public static void main(String[] args) throws IOException {
+        int port = 8080;
+        boolean lan = false;
+        for (String a : args) {
+            if (a.equals("--lan")) lan = true;
+            else if (a.matches("\\d{2,5}") && Integer.parseInt(a) <= 65535) port = Integer.parseInt(a);
+            else System.out.println("Ignoring unknown option: " + a);
+        }
+
+        loadAccounts();   // the same start-up steps as the desktop app's main()
+        loadData();
+
+        InetSocketAddress address = lan ? new InetSocketAddress(port) : new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
+        HttpServer server;
+        try {
+            server = HttpServer.create(address, 0);
+        } catch (BindException e) {
+            System.err.println("Port " + port + " is already in use (is MediQueue Web already running?).");
+            System.err.println("Close the other program, or start on another port:  java -jar MediQueueWeb.jar " + (port + 1));
+            System.exit(1);
+            return;
+        }
+        server.createContext("/api/", MediQueueWeb::handleApi);
+        server.createContext("/", MediQueueWeb::handleFile);
+        server.setExecutor(Executors.newFixedThreadPool(8));
+        server.start();
+
+        System.out.println("MediQueue Web is running.");
+        System.out.println("  Open in your browser:  http://localhost:" + port);
+        if (lan) printNetworkAddresses(port);
+        System.out.println("  Web pages from:        " + (Files.isDirectory(Paths.get("web")) ? Paths.get("web").toAbsolutePath() : "the copy inside the .jar file"));
+        System.out.println("  Data saved in:         " + Paths.get("").toAbsolutePath());
+        System.out.println("  Press Ctrl+C to stop.");
+    }
+
+    private static void printNetworkAddresses(int port) {
+        try {
+            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                for (InetAddress ip : Collections.list(ni.getInetAddresses()))
+                    if (ip instanceof Inet4Address) System.out.println("  On other devices:      http://" + ip.getHostAddress() + ":" + port);
+            }
+        } catch (IOException e) {
+            // the extra addresses are only a convenience
+        }
+        System.out.println("  Note: anyone on this network can open the site, so use made-up data only.");
+    }
+main starts the same way as the desktop's main, with loadAccounts() and loadData(), then starts the server. By default it listens only on your own computer; --lan opens it to your network. Requests for /api/... go to handleApi and everything else goes to handleFile, on up to 8 threads at once.
+Step 4.3: The /api/ addresses
+Paste above the last }:
+    // =====================================================================
+    //  /api/...  (the clinic actions, answered with JSON)
+    // =====================================================================
+    private static void handleApi(HttpExchange ex) throws IOException {
+        try {
+            Map<String, String> form = Collections.emptyMap();
+            if (ex.getRequestMethod().equals("POST")) {
+                // Our own page always sends this header. Other websites cannot add it, so they cannot make a
+                // signed-in browser send us requests behind the user's back ("cross-site request forgery").
+                if (!"1".equals(ex.getRequestHeaders().getFirst("X-MediQueue"))) throw new UserError(403, "Request blocked.");
+                form = readForm(ex);
+            }
+            String request = ex.getRequestMethod() + " " + ex.getRequestURI().getPath();
+            Object answer;
+            synchronized (MediQueueData.class) {   // one request at a time touches the data, like one desktop window
+                answer = route(ex, request, form);
+            }
+            sendJson(ex, 200, answer);
+        } catch (UserError e) {
+            sendJson(ex, e.status, obj("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            if (ex.getResponseCode() == -1) sendJson(ex, 500, obj("error", "Something went wrong on the server."));
+        } finally {
+            ex.close();
+        }
+    }
+
+    /** Decides what to do for each address. Every action is a method in MediQueueService. */
+    private static Object route(HttpExchange ex, String request, Map<String, String> form) {
+        switch (request) {
+            // ---------- asked by the page when it opens: who is signed in on this browser? (null = nobody) ----------
+            case "GET /api/state": {
+                Account me = signedInUser(ex);
+                return obj("ok", true, "state", me == null ? null : stateFor(me));
+            }
+
+            // ---------- signing in and out (no account needed) ----------
+            case "POST /api/login": {
+                String role = field(form, "role").equals("admin") ? "admin" : "patient";
+                Account a = login(field(form, "username"), field(form, "password"), role);
+                startBrowserSession(ex, a);
+                return reply(a, "Welcome, " + firstName(a.name) + "!", "green");
+            }
+            case "POST /api/register": {
+                Account a = register(field(form, "name"), field(form, "contact"), field(form, "username"),
+                                     field(form, "password"), field(form, "password2"));
+                startBrowserSession(ex, a);
+                return reply(a, "Welcome, " + firstName(a.name) + "!", "green");
+            }
+            case "POST /api/reset": {
+                Account a = resetPassword(field(form, "username"), field(form, "contact"), field(form, "password"), field(form, "password2"));
+                SESSIONS.values().removeIf(s -> s.username.equalsIgnoreCase(a.username));   // sign-ins with the old password end
+                return obj("ok", true, "message", "Password updated. You can now sign in.", "tone", "green", "username", a.username);
+            }
+            case "POST /api/logout":
+                endBrowserSession(ex);
+                return obj("ok", true, "message", "You have been logged out.", "tone", "green");
+            default:
+                break;
+        }
+
+        Account me = signedInUser(ex);
+        if (me == null) throw new UserError(401, "Please sign in first.");
+
+        switch (request) {
+            // ---------- patients ----------
+            case "POST /api/book": {
+                if (isAdmin(me)) throw new UserError(403, "Only patients can book appointments.");
+                Appt a = book(me, field(form, "doctor"), field(form, "date"), field(form, "time"));
+                return reply(me, "Booked with " + a.doc + " on " + a.date.format(DATE_FMT) + " at " + a.time.format(TIME_FMT), "green");
+            }
+            case "POST /api/cancel": {   // patients cancel their own appointments; staff can cancel any
+                Appt a = cancel(me, field(form, "id"));
+                return reply(me, "Appointment " + a.id + " has been cancelled.", "red");
+            }
+
+            // ---------- clinic staff ----------
+            case "POST /api/confirm":
+                staffOnly(me);
+                confirm(field(form, "id"));
+                return reply(me, "Appointment confirmed.", "green");
+            case "POST /api/queue/next":
+                staffOnly(me);
+                return reply(me, "Now calling " + callNext().name, "green");
+            case "POST /api/queue/call":
+                staffOnly(me);
+                return reply(me, "Now calling " + callPatient(number(form, "index"), field(form, "name")).name, "green");
+            case "POST /api/queue/complete":
+                staffOnly(me);
+                return reply(me, "Consultation completed for " + completePatient(number(form, "index"), field(form, "name")).name + ".", "green");
+            case "POST /api/patients/save":
+                staffOnly(me);
+                savePatient(field(form, "id"), field(form, "name"), field(form, "age"), field(form, "gender"), field(form, "contact"));
+                return reply(me, "Patient saved.", "green");
+            case "POST /api/patients/delete":
+                staffOnly(me);
+                deletePatient(field(form, "id"));
+                return reply(me, "Patient deleted.", "red");
+            case "POST /api/schedules/add":
+                staffOnly(me);
+                addSchedule(field(form, "doctor"), field(form, "date"), field(form, "slots"));
+                return reply(me, "Schedule added.", "green");
+            case "POST /api/schedules/toggle": {
+                staffOnly(me);
+                Sched s = toggleSchedule(number(form, "id"));
+                return reply(me, s.ok ? "Schedule marked available." : "Schedule marked not available.", "green");
+            }
+            case "POST /api/schedules/remove":
+                staffOnly(me);
+                removeSchedule(number(form, "id"));
+                return reply(me, "Schedule removed.", "red");
+            default:
+                throw new UserError(404, "Not found.");
+        }
+    }
+
+    /** The usual answer after a change: a message for the pop-up, its colour, and the fresh screen data. */
+    private static Map<String, Object> reply(Account me, String message, String tone) {
+        return obj("ok", true, "message", message, "tone", tone, "state", stateFor(me));
+    }
+
+    private static void staffOnly(Account me) {
+        if (!isAdmin(me)) throw new UserError(403, "Only clinic staff can do that.");
+    }
+
+    private static String field(Map<String, String> form, String name) {
+        String v = form.get(name);
+        return v == null ? "" : v;
+    }
+
+    private static int number(Map<String, String> form, String name) { return toInt(field(form, name)); }
+Every request to /api/... passes through handleApi:
+1.A POST must carry the header X-MediQueue: 1. The page always sends it and other websites cannot, which blocks cross-site request forgery.
+2.The form fields (name=value&...) are read into a map.
+3.synchronized (MediQueueData.class) lets one request at a time touch the data, so two requests never save the same file at the same moment.
+4.route picks the action from the method and address, such as POST /api/book, and calls the matching MediQueueService method. Staff-only actions call staffOnly first.
+5.The answer goes back as JSON. A UserError becomes {"error": "..."} with its status code.
+Step 4.4: Sign-in sessions
+Paste above the last }:
+    // =====================================================================
+    //  SIGN-IN SESSIONS (a random token kept in a cookie)
+    // =====================================================================
+    private static void startBrowserSession(HttpExchange ex, Account a) {
+        String old = cookie(ex, COOKIE);
+        if (old != null) SESSIONS.remove(old);           // every sign-in gets a brand-new token
+        SESSIONS.values().removeIf(Session::expired);     // tidy up sign-ins that ran out
+        byte[] bytes = new byte[24];
+        RANDOM.nextBytes(bytes);
+        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        SESSIONS.put(token, new Session(a.username));
+        ex.getResponseHeaders().add("Set-Cookie", COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Strict");
+    }
+
+    private static void endBrowserSession(HttpExchange ex) {
+        String token = cookie(ex, COOKIE);
+        if (token != null) SESSIONS.remove(token);
+        ex.getResponseHeaders().add("Set-Cookie", COOKIE + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
+    }
+
+    private static Account signedInUser(HttpExchange ex) {
+        String token = cookie(ex, COOKIE);
+        Session s = token == null ? null : SESSIONS.get(token);
+        if (s == null) return null;
+        if (s.expired()) {
+            SESSIONS.remove(token);
+            return null;
+        }
+        return ACCOUNTS.get(s.username.toLowerCase());
+    }
+
+    private static String cookie(HttpExchange ex, String name) {
+        List<String> headers = ex.getRequestHeaders().get("Cookie");
+        if (headers == null) return null;
+        for (String header : headers)
+            for (String part : header.split(";")) {
+                String[] kv = part.trim().split("=", 2);
+                if (kv.length == 2 && kv[0].equals(name)) return kv[1];
+            }
+        return null;
+    }
+At sign-in the server makes a random token, remembers whose it is in SESSIONS, and gives it to the browser in a cookie. HttpOnly stops page scripts from reading the cookie, and SameSite=Strict stops other websites from sending it. Every later request carries the cookie, so signedInUser knows who is asking. Sign-ins live in memory, so restarting the server signs everyone out.
+Step 4.5: Serving the web pages
+Paste above the last }:
+    // =====================================================================
+    //  WEB PAGES (index.html, app.css, app.js from the web/ folder)
+    // =====================================================================
+    private static void handleFile(HttpExchange ex) throws IOException {
+        try {
+            String method = ex.getRequestMethod();
+            if (!method.equals("GET") && !method.equals("HEAD")) {
+                sendText(ex, 405, "Method not allowed");
+                return;
+            }
+            String path = ex.getRequestURI().getPath();
+            String name = path.equals("/") ? "index.html" : path.substring(1);
+            // Only plain file names such as app.js are served, so tricks like ../ cannot reach other files.
+            byte[] body = name.matches("[A-Za-z0-9_-]+\\.(html|css|js|svg|png|ico)") ? webFile(name) : null;
+            if (body == null) {
+                sendText(ex, 404, "Not found");
+                return;
+            }
+            Headers h = ex.getResponseHeaders();
+            h.set("Content-Type", TYPES.get(name.substring(name.lastIndexOf('.') + 1)));
+            h.set("Cache-Control", "no-cache");
+            h.set("X-Content-Type-Options", "nosniff");
+            h.set("Referrer-Policy", "no-referrer");
+            h.set("X-Frame-Options", "DENY");
+            if (name.endsWith(".html")) h.set("Content-Security-Policy", CSP);
+            if (method.equals("HEAD") || body.length == 0) {
+                ex.sendResponseHeaders(200, -1);
+                return;
+            }
+            ex.sendResponseHeaders(200, body.length);
+            try (OutputStream out = ex.getResponseBody()) { out.write(body); }
+        } finally {
+            ex.close();
+        }
+    }
+
+    /** A file from the web/ folder next to the program, or the copy packed inside the .jar when that folder is missing. */
+    private static byte[] webFile(String name) throws IOException {
+        Path onDisk = Paths.get("web", name);
+        if (Files.isRegularFile(onDisk)) return Files.readAllBytes(onDisk);
+        try (InputStream in = MediQueueWeb.class.getResourceAsStream("/web/" + name)) {
+            return in == null ? null : in.readAllBytes();
+        }
+    }
+handleFile serves only plain file names such as app.js. A name with a slash or .. gets Not found, so nobody can read your source code or the saved data through the browser. webFile looks in the web folder first, then in the copy packed inside the .jar (Phase 10), so the jar also works on its own.
+Step 4.6: Reading requests and sending answers
+Paste above the last }:
+    // =====================================================================
+    //  READING REQUESTS AND SENDING ANSWERS
+    // =====================================================================
+
+    /** Reads a form the page sent (name=value&name=value) into a map. */
+    private static Map<String, String> readForm(HttpExchange ex) throws IOException {
+        byte[] body;
+        try (InputStream in = ex.getRequestBody()) { body = in.readNBytes(MAX_BODY_BYTES + 1); }
+        if (body.length > MAX_BODY_BYTES) throw new UserError(413, "That request is too large.");
+        Map<String, String> form = new HashMap<>();
+        for (String pair : new String(body, StandardCharsets.UTF_8).split("&")) {
+            if (pair.isEmpty()) continue;
+            String[] kv = pair.split("=", 2);
+            try {
+                form.put(URLDecoder.decode(kv[0], StandardCharsets.UTF_8), kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : "");
+            } catch (IllegalArgumentException e) {
+                throw new UserError("The form could not be read.");
+            }
+        }
+        return form;
+    }
+
+    private static void sendJson(HttpExchange ex, int status, Object body) throws IOException {
+        byte[] bytes = Json.write(body).getBytes(StandardCharsets.UTF_8);
+        Headers h = ex.getResponseHeaders();
+        h.set("Content-Type", "application/json; charset=utf-8");
+        h.set("Cache-Control", "no-store");
+        h.set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(status, bytes.length);
+        try (OutputStream out = ex.getResponseBody()) { out.write(bytes); }
+    }
+
+    private static void sendText(HttpExchange ex, int status, String text) throws IOException {
+        ex.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        if (ex.getRequestMethod().equals("HEAD")) {
+            ex.sendResponseHeaders(status, -1);
+            return;
+        }
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        ex.sendResponseHeaders(status, bytes.length);
+        try (OutputStream out = ex.getResponseBody()) { out.write(bytes); }
+    }
+readForm reads at most 16 KB and turns name=value&... into a map. sendJson and sendText send the answer with its status code and content type.
+Checkpoint 4
+Compile all five files, then start the server:
+javac --release 17 -encoding UTF-8 -d build src/MediQueueData.java src/MediQueue.java src/Json.java src/MediQueueService.java src/MediQueueWeb.java
+java -cp build mediqueue.MediQueueWeb
+The server prints where it is running and where it saves data:
+MediQueue Web is running.
+  Open in your browser:  http://localhost:8080
+  Web pages from:        C:\Users\you\MediQueue-Web\web
+  Data saved in:         C:\Users\you\MediQueue-Web
+  Press Ctrl+C to stop.
+Now test it. Open a second terminal for the curl commands (on Windows, type curl.exe instead of curl):
+curl -i -H "X-MediQueue: 1" -d "username=aldred&password=aldred06&role=admin" http://localhost:8080/api/login
+•☐ http://localhost:8080 in the browser shows Not found. That is expected: index.html arrives in Phase 5.
+•☐ http://localhost:8080/api/state shows {"ok":true,"state":null}: the API works and nobody is signed in.
+•☐ The curl command answers 200 with a Set-cookie: mq_session=... header, and the JSON starts with {"ok":true,"message":"Welcome, Mark!".
+•☐ With password=wrong, the answer is {"error":"Invalid username or password."}.
+•☐ Without -H "X-MediQueue: 1", the answer is 403 with {"error":"Request blocked."}.
+Stop the server with Ctrl + C.
+Phase 5: The page shell and styles
+Phase 5 creates the page the browser loads. index.html is one nearly empty page with a box that app.js fills in from Phase 6 on, and app.css carries the desktop's look: every colour comes from the THEME section of MediQueue.java.
+Desktop (MediQueue.java)	Web (app.css)	Colour	Used for
+NAVY1, NAVY2	--navy1, --navy2	#0B2350, #12326F	Sidebar
+BLUE	--blue	#2563EB	Buttons, links, selected items
+BG1, BG2	--bg1, --bg2	#DBEAFE, #D1FAE5	Page background
+TEXT, MUTED	--text, --muted	#1E293B, #64748B	Text, quiet text
+RED, GREEN, PURPLE	--red, --green, --purple	#DC2626, #22B573, #8B5CF6	Errors, success, stat icons
+Swing measures rounded corners by diameter and CSS by radius, so the desktop's fillRoundRect(..., 12, 12) becomes border-radius: 6px here.
+Step 5.1: Create web/index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediQueue - Clinic Appointment &amp; Queue System</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <!-- app.js draws every screen inside this box -->
+  <div id="app"><p class="boot">Loading MediQueue&hellip;</p></div>
+
+  <!-- the small pop-up message at the bottom of the screen -->
+  <div id="toast" class="toast" role="status" aria-live="polite"><span class="toast-dot"></span><span class="toast-text"></span></div>
+
+  <noscript><p class="boot">MediQueue needs JavaScript. Please turn it on in your browser.</p></noscript>
+</body>
+</html>
+app.js draws every screen inside <div id="app">. The toast box is the pop-up message at the bottom of the screen, the desktop's ToastPane. defer makes the browser run app.js after it has read the whole page.
+Step 5.2: Create web/favicon.svg
+The logo for the browser tab: the desktop's teal square with a white plus.
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2DD4BF"/><stop offset="1" stop-color="#0EA5E9"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="url(#g)"/><path d="M32 18v28M18 32h28" stroke="#fff" stroke-width="6" stroke-linecap="round"/></svg>
+Step 5.3: Create web/app.css, part 1
+Colours, base styles, the sign-in card, the logo, form fields and buttons:
+/* MediQueue Web - styles.
+   Colours and sizes follow the THEME section of the desktop app (MediQueue.java), so both versions look alike. */
+
+:root {
+  --navy1: #0b2350;
+  --navy2: #12326f;
+  --blue: #2563eb;
+  --blue-hi: #2f6bff;
+  --bg1: #dbeafe;
+  --bg2: #d1fae5;
+  --text: #1e293b;
+  --muted: #64748b;
+  --line: #e8edf5;
+  --input: #cbd5e1;
+  --red: #dc2626;
+  --green: #22b573;
+  --purple: #8b5cf6;
+  --sky: #3b82f6;
+  --rose: #f43f5e;
+  --slate: #64748b;
+  --danger: #ef4444;
+  --soft: #eaf1ff;
+  --light: #f1f5f9;
+  --neutral: #e2e8f0;
+  --side-text: #cbd8f5;
+  --side-muted: #9fb6e6;
+  --font: "Segoe UI", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Ubuntu, "Noto Sans", "Open Sans", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+  background: linear-gradient(135deg, var(--bg1), var(--bg2)) fixed;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, p, dl, dd { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.ico { display: block; flex: none; }
+.muted { color: var(--muted); }
+.nw { white-space: nowrap; }
+.boot { display: grid; place-items: center; min-height: 100vh; color: var(--muted); }
+
+/* ---------- sign in / register / reset ---------- */
+.auth {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px 16px;
+  background: linear-gradient(135deg, var(--navy1), #0ea5a4);
+}
+.auth-card {
+  width: 100%;
+  max-width: 410px;
+  padding: 26px 28px 22px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(2, 12, 40, .35);
+}
+.auth-brand { margin-bottom: 18px; text-align: center; }
+.auth-brand .mark { margin: 0 auto; }
+.auth-brand h1 { margin-top: 8px; font-size: 24px; }
+.auth-brand p { margin-top: 2px; font-size: 12px; color: var(--muted); }
+.auth-title { font-size: 15px; }
+.auth-text { font-size: 12px; color: var(--muted); }
+.auth-links { display: flex; justify-content: space-between; gap: 8px; }
+.auth-hint { font-size: 11px; color: var(--muted); text-align: center; }
+.roles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.role-btn {
+  padding: 9px 18px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--light);
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+.role-btn.on { background: var(--blue); color: #fff; }
+.link-btn {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
+
+/* the logo: a teal-to-sky square with a white plus */
+.mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  color: #fff;
+  background: linear-gradient(135deg, #2dd4bf, #0ea5e9);
+}
+.mark-lg { width: 54px; height: 54px; border-radius: 9px; }
+.mark-sm { width: 28px; height: 28px; border-radius: 5px; }
+
+/* ---------- forms ---------- */
+.form { display: grid; gap: 12px; }
+.form-tight { gap: 9px; }
+.field { display: grid; gap: 4px; }
+.field-label { font-size: 12px; font-weight: 700; color: var(--muted); }
+.input {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+}
+.input:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px rgba(37, 99, 235, .15); }
+.input[readonly] { background: var(--light); color: var(--muted); }
+select.input { cursor: pointer; }
+.form-err { min-height: 17px; font-size: 12px; color: var(--red); }
+
+/* ---------- buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter .15s;
+}
+.btn:hover { filter: brightness(.92); }
+.btn:active { filter: brightness(.85); }
+.btn:disabled { background: var(--light); color: var(--input); filter: none; cursor: default; }
+.btn-mini { padding: 5px 11px; font-size: 11px; }
+.btn-block { width: 100%; }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-soft { background: var(--soft); color: var(--blue); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-success { background: var(--green); color: #fff; }
+.btn-neutral { background: var(--neutral); color: var(--text); }
+.btn-light { background: var(--light); color: var(--text); }
+.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+.btn-stack { display: grid; gap: 8px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.icon-btn {
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--side-text);
+  cursor: pointer;
+}
+.icon-btn:hover { background: rgba(255, 255, 255, .11); }
+Button hover and press darken the colour by 8% and 15%, the same shade(bg, .92) and shade(bg, .85) the desktop's RoundButton uses.
+Step 5.4: app.css, part 2
+Add to the end of app.css: the sidebar, header, page layout, cards, stat cards, tables and status badges.
+/* ---------- app shell: sidebar + page ---------- */
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+.sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 18px 12px 16px;
+  overflow-y: auto;
+  color: #fff;
+  background: linear-gradient(180deg, var(--navy1), var(--navy2));
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 0 20px 6px; }
+.brand-text strong { display: block; font-size: 18px; line-height: 1.2; }
+.brand-text small { display: block; font-size: 9px; line-height: 1.3; color: var(--side-muted); }
+.nav { display: grid; align-content: start; gap: 4px; flex: 1; }
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 10px 11px 14px;
+  border-radius: 6px;
+  color: var(--side-text);
+  text-decoration: none;
+}
+.nav-item:hover { background: rgba(255, 255, 255, .11); }
+.nav-item.on { background: var(--blue-hi); color: #fff; }
+.side-foot { display: flex; align-items: center; gap: 10px; padding: 12px 0 0 6px; border-top: 1px solid rgba(255, 255, 255, .16); }
+.side-user { flex: 1; min-width: 0; }
+.side-user strong { display: block; font-size: 13px; }
+.side-user small { display: block; font-size: 11px; color: var(--side-muted); }
+.scrim { display: none; }
+.topbar { display: none; }
+
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  background: linear-gradient(135deg, #60a5fa, var(--blue));
+}
+.avatar-34 { width: 34px; height: 34px; font-size: 11px; }
+.avatar-38 { width: 38px; height: 38px; font-size: 12px; }
+
+.main { display: flex; flex-direction: column; min-width: 0; }
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 20px 26px 16px; }
+.page-head h1 { font-size: 22px; line-height: 1.25; }
+.page-head p { margin-top: 3px; color: var(--muted); }
+.head-right { display: flex; align-items: center; gap: 14px; flex: none; }
+.head-user strong { display: block; font-size: 13px; }
+.head-user small { display: block; font-size: 11px; color: var(--muted); }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+}
+.bell { color: var(--muted); }
+.content { padding: 0 26px 26px; }
+
+/* ---------- page layout ---------- */
+.stack { display: grid; gap: 16px; }
+/* like the desktop FlowGrid: as many equal columns as fit, each at least 340px wide */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 16px; }
+.stats { display: grid; gap: 16px; }
+.stats-3 { grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); }
+.stats-4 { grid-template-columns: repeat(auto-fit, minmax(min(205px, 100%), 1fr)); }
+.narrow { width: 100%; }
+.w520 { max-width: 520px; }
+.w560 { max-width: 560px; }
+.w700 { max-width: 700px; }
+.w820 { max-width: 820px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.toolbar-split { justify-content: space-between; }
+.toolbar select.input { width: auto; min-width: 200px; }
+.search { position: relative; flex: 0 1 300px; }
+.search .ico { position: absolute; top: 50%; left: 10px; color: var(--muted); transform: translateY(-50%); }
+.search .input { padding-left: 32px; }
+
+/* ---------- cards ---------- */
+.card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.card-head h2 { font-size: 15px; }
+.card-link { color: var(--blue); font-size: 12px; font-weight: 700; text-decoration: none; }
+.card-link:hover { text-decoration: underline; }
+.card-note { font-size: 11px; color: var(--muted); }
+.sub-title { margin: 14px 0 8px; font-size: 13px; }
+
+/* ---------- stat cards ---------- */
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  text-decoration: none;
+}
+a.stat:hover { border-color: #c7d6f5; box-shadow: 0 4px 14px rgba(15, 23, 42, .06); }
+.stat-ico { display: grid; place-items: center; flex: none; width: 52px; height: 52px; border-radius: 8px; color: #fff; }
+.stat-text { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.stat-label { font-size: 12px; color: var(--muted); }
+.stat-value, .stat-sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.stat-value { font-size: 22px; font-weight: 700; line-height: 1.25; }
+.stat-sub { font-size: 11px; color: #16a34a; }
+.stat-chev { color: #94a3b8; }
+.bg-blue { background: var(--sky); }
+.bg-green { background: var(--green); }
+.bg-purple { background: var(--purple); }
+.bg-rose { background: var(--rose); }
+.bg-slate { background: var(--slate); }
+
+/* ---------- tables ---------- */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { padding: 8px 6px; color: var(--muted); font-size: 11px; font-weight: 700; text-align: left; white-space: nowrap; }
+td { padding: 8px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
+tr.hl td { background: #eef4ff; font-weight: 700; }
+td.empty { color: var(--muted); }
+
+/* ---------- status badges ---------- */
+.badge { display: inline-block; padding: 3px 11px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.badge-green { color: #15803d; background: #dcfce7; }
+.badge-amber { color: #b45309; background: #fef3c7; }
+.badge-blue { color: #1d4ed8; background: #dbeafe; }
+.badge-indigo { color: #4338ca; background: #e0e7ff; }
+.badge-red { color: #b91c1c; background: #fee2e2; }
+.badge-gray { color: #475569; background: #e2e8f0; }
+.grid works like the desktop's FlowGrid: as many equal columns as fit, each at least 340px wide. The badge colours are the ones the desktop's Badge class uses for each status.
+Step 5.5: app.css, part 3
+Add to the end of app.css: the patient pieces, the staff counters, dialogs, the toast, and the phone layout.
+/* ---------- patient: appointment items ---------- */
+.list { display: grid; gap: 8px; }
+.appt { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.appt-date {
+  display: grid;
+  place-items: center;
+  flex: none;
+  min-width: 52px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  background: #eaf1ff;
+  color: var(--blue);
+  font-weight: 700;
+  line-height: 1.15;
+}
+.appt-mo { font-size: 10px; }
+.appt-dy { font-size: 17px; }
+.appt-info { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.appt-info span { font-size: 12px; color: var(--muted); }
+.appt-side { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+
+/* ---------- patient: queue number box ---------- */
+.qbox {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #c7efd9;
+  border-radius: 6px;
+  background: #e9faf1;
+}
+.qbox-ico { display: grid; place-items: center; flex: none; width: 46px; height: 46px; border-radius: 7px; color: #fff; background: var(--green); }
+.qbox-label { font-size: 11px; color: #15803d; }
+.qbox-num { font-size: 26px; font-weight: 700; line-height: 1.15; color: #15803d; }
+.qbox-sub { font-size: 11px; color: var(--muted); }
+
+/* ---------- patient: calendar ---------- */
+.cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; text-align: center; }
+.cal-head { padding: 2px 0; font-size: 10px; font-weight: 700; color: var(--muted); }
+.cal-day { display: grid; place-items: center; width: 30px; height: 30px; margin: 0 auto; border-radius: 50%; font-size: 12px; }
+.cal-day.mark { background: #e0ecff; color: var(--blue); }
+.cal-day.sel { background: var(--blue); color: #fff; }
+
+/* ---------- label / value lists (profile, appointment details) ---------- */
+.kv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.kv-row dt { color: var(--muted); }
+.kv-row dd { font-weight: 700; text-align: right; }
+.dialog .kv-row { padding: 6px 0; }
+
+/* ---------- admin: summary and counters ---------- */
+.summary { margin: 0; padding: 0; list-style: none; }
+.summary li { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+.summary li span:nth-child(2) { flex: 1; }
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+.counters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.counter { display: grid; gap: 2px; padding: 14px; border-radius: 7px; color: #fff; text-align: center; }
+.counter strong { font-size: 28px; line-height: 1.2; }
+.counter span { font-size: 12px; }
+
+/* ---------- dialogs ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, .45);
+  animation: fade .15s ease-out;
+}
+.dialog {
+  width: 100%;
+  padding: 20px 22px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, .3);
+  animation: pop .18s ease-out;
+}
+.dialog.w380 { max-width: 380px; }
+.dialog.w400 { max-width: 400px; }
+.dialog.w440 { max-width: 440px; }
+.dialog-body { display: grid; gap: 8px; }
+.dlg-title { font-size: 18px; }
+.ask-title { font-size: 16px; }
+.dlg-sub { font-size: 13px; color: var(--muted); }
+.warn { padding: 10px 12px; border-radius: 5px; background: #fef2f2; color: var(--red); font-size: 12px; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+
+/* ---------- toast (pop-up message) ---------- */
+.toast {
+  position: fixed;
+  bottom: 54px;
+  left: 50%;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100% - 32px);
+  padding: 13px 22px 13px 20px;
+  border-radius: 13px;
+  background: #0f172a;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, .18);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 14px);
+  transition: opacity .25s, transform .25s;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--green); }
+.toast-red .toast-dot { background: var(--red); }
+
+/* ---------- phones and small windows: the sidebar becomes a slide-out menu ---------- */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: 240px;
+    height: auto;
+    visibility: hidden;
+    transform: translateX(-100%);
+    transition: transform .2s ease, visibility .2s;
+  }
+  .nav-open .sidebar { visibility: visible; transform: none; box-shadow: 0 0 40px rgba(2, 12, 40, .4); }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: block;
+    background: rgba(15, 23, 42, .4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s;
+  }
+  .nav-open .scrim { opacity: 1; pointer-events: auto; }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    color: #fff;
+    background: linear-gradient(90deg, var(--navy1), var(--navy2));
+  }
+  .topbar .icon-btn { color: #fff; }
+  .topbar strong { font-size: 16px; }
+  .page-head { flex-direction: column; align-items: flex-start; padding: 16px; }
+  .content { padding: 0 16px 24px; }
+  .counters { gap: 10px; }
+  .input { font-size: 16px; }   /* stops phones from zooming in when a field is tapped */
+}
+@media (max-width: 420px) {
+  .auth-card { padding: 22px 18px 18px; }
+  .head-user { display: none; }
+  .appt { flex-wrap: wrap; }
+  .appt-side { width: 100%; justify-content: flex-start; padding-left: 64px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+Below 860px wide, the sidebar becomes a slide-out menu that a button in a top bar opens (Phase 6 adds the button). The last rule turns animations off for people who asked their system for less motion.
+Checkpoint 5
+Start the server again with java -cp build mediqueue.MediQueueWeb, then open http://localhost:8080.
+•☐ The page shows "Loading MediQueue..." in grey, centred on a light blue-to-green background.
+•☐ The browser tab shows the teal plus icon.
+•☐ Press F12 and open Console: one error says app.js was not found (404). That is expected; Phase 6 creates it.
+Leave the server running. Phases 6 to 9 only change files in web/, and the server reads them fresh on every request: save the file, then refresh the browser.
+Phase 6: app.js, part 1 (sign-in and the app shell)
+Phase 6 starts app.js, the code that draws every screen. When the page opens, it asks the server for the state: with nobody signed in it shows the sign-in card, otherwise the signed-in user's page. Buttons send their form to /api/..., and the new state in the reply redraws the page, much like the desktop's render().
+By the end of Phase 6 you can sign in, register, reset a password and sign out, with the sidebar and header in place. Each page shows a "Coming soon" card until Phases 7 and 8 build it.
+Step 6.1 creates the file. Everything lives inside (function () { ... })();, which keeps its names private to this file. Steps 6.2 to 6.7 each add one part just above the last line, })();.
+Step 6.1: Create web/app.js with the building blocks
+/*
+ * MediQueue Web - the screens of the clinic system, drawn in the browser.
+ *
+ * How it works
+ *   1. The page asks the Java server for "the state": everything the signed-in user's screens need.
+ *   2. render() draws the current page from that state (like render() in the desktop MediQueue.java).
+ *   3. Buttons send a request to the server, for example /api/book. The server checks the rules, saves the
+ *      change, and answers with a message and the new state. Then the page is drawn again.
+ *
+ * Plain JavaScript, no libraries. The part of the address after # (for example #queue) says which page
+ * is open, so the browser's Back button works.
+ */
+'use strict';
+
+(function () {
+  const app = document.getElementById('app');
+  const toastBox = document.getElementById('toast');
+
+  // =====================================================================
+  //  SMALL HELPERS FOR BUILDING THE PAGE
+  // =====================================================================
+
+  /**
+   * Makes an HTML element: h('button', { class: 'btn', onclick: save }, 'Save').
+   * Text is always added as plain text, never as HTML, so a name typed by a user cannot inject code.
+   */
+  function h(tag, props, ...children) {
+    const el = document.createElement(tag);
+    for (const [key, value] of Object.entries(props || {})) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
+      else if (key === 'class') el.className = value;
+      else el.setAttribute(key, value === true ? '' : String(value));
+    }
+    for (const child of children.flat(Infinity)) {
+      if (child === null || child === undefined || child === false) continue;
+      el.append(child instanceof Node ? child : String(child));
+    }
+    return el;
+  }
+
+  // Line icons on a 24 x 24 grid: the same shapes the desktop app draws in its Ico class.
+  const ICONS = {
+    home: '<path d="M3 11 12 3l9 8M5 10v10h14V10M10 20v-6h4v6"/>',
+    cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    list: '<path d="M9 7h11M9 12h11M9 17h11"/><circle cx="4" cy="7" r="1.2" fill="currentColor" stroke="none"/>' +
+      '<circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="17" r="1.2" fill="currentColor" stroke="none"/>',
+    users: '<circle cx="8" cy="8" r="4"/><path d="M14.5 20.5a6.5 6.5 0 0 0-13 0"/><circle cx="18" cy="9" r="3"/><path d="M23 19a4 4 0 0 0-8 0"/>',
+    user: '<circle cx="12" cy="7" r="4"/><path d="M20 22a8 8 0 0 0-16 0"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/>',
+    chart: '<path d="M6 20v-7M12 20V5M18 20V10"/>',
+    out: '<path d="M10 4H5v16h5M10 12h11M17 8l4 4-4 4"/>',
+    bell: '<path d="M18 11a6 7 0 0 0-12 0M6 11l-1 6M18 11l1 6M4 17h16M10 20h4"/>',
+    card: '<rect x="2" y="5" width="20" height="14" rx="1.5"/><path d="M2 10h20"/>',
+    next: '<path d="m9 5 7 7-7 7"/>',
+    prev: '<path d="m15 5-7 7 7 7"/>',
+    hash: '<path d="M9 4 7 20M17 4l-2 16M4 9h16M4 15h16"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>',
+  };
+
+  function icon(name, size) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const px = String(size || 18);
+    const attrs = {
+      viewBox: '0 0 24 24', width: px, height: px, fill: 'none', stroke: 'currentColor', 'stroke-width': '2',
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'ico',
+    };
+    for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
+    svg.innerHTML = ICONS[name] || ICONS.plus;   // fixed shapes from the list above, never user data
+    return svg;
+  }
+
+  // Status colours, as in the desktop Badge class.
+  const BADGE_COLORS = {
+    'In Consultation': 'green', Confirmed: 'green', Available: 'green',
+    Waiting: 'amber', Next: 'blue', Upcoming: 'blue', Scheduled: 'indigo',
+    Cancelled: 'red', 'Not Available': 'red',
+  };
+  const badge = (text) => h('span', { class: 'badge badge-' + (BADGE_COLORS[text] || 'gray') }, text);
+
+  /** Round picture with the first letters of the first two names, like the desktop Avatar. */
+  function avatar(name, size) {
+    const letters = name.split(' ').filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+    return h('span', { class: 'avatar avatar-' + size, 'aria-hidden': 'true' }, letters);
+  }
+
+  /** A button. kind is one of: primary, soft, danger, success, neutral, light. */
+  const btn = (text, kind, onclick, mini) =>
+    h('button', { type: 'button', class: 'btn btn-' + kind + (mini ? ' btn-mini' : ''), onclick }, text);
+  const linkBtn = (text, kind, page) => h('a', { class: 'btn btn-' + kind, href: '#' + page }, text);
+
+  /** A white card with a title and, on the right, a "View All" link or a small note. */
+  function card(title, extra, ...body) {
+    const head = h('div', { class: 'card-head' }, h('h2', null, title));
+    if (extra && extra.go) head.append(h('a', { class: 'card-link', href: '#' + extra.go }, 'View All'));
+    else if (extra && extra.note) head.append(h('span', { class: 'card-note' }, extra.note));
+    return h('section', { class: 'card' }, head, body);
+  }
+
+  /** A table. Cells can be text or elements (badges, buttons). */
+  function table(heads, rows, highlight) {
+    const body = rows.length
+      ? rows.map((cells, i) => h('tr', { class: i === highlight ? 'hl' : null }, cells.map((c) => h('td', null, c))))
+      : h('tr', null, h('td', { class: 'empty', colspan: heads.length }, 'Nothing here yet.'));
+    return h('div', { class: 'table-wrap' },
+      h('table', null, h('thead', null, h('tr', null, heads.map((t) => h('th', { scope: 'col' }, t)))), h('tbody', null, body)));
+  }
+
+  /** A number card with a coloured icon, like stat() in the desktop app. With a page name it becomes a link. */
+  function stat(color, ico, label, value, sub, page) {
+    const parts = [
+      h('span', { class: 'stat-ico bg-' + color }, icon(ico, 24)),
+      h('span', { class: 'stat-text' },
+        h('span', { class: 'stat-label' }, label), h('span', { class: 'stat-value' }, value), h('span', { class: 'stat-sub' }, sub)),
+    ];
+    if (page) parts.push(h('span', { class: 'stat-chev' }, icon('next', 18)));
+    return page ? h('a', { class: 'stat', href: '#' + page }, parts) : h('div', { class: 'stat' }, parts);
+  }
+
+  /** Label/value rows, used for the profile and the appointment details. */
+  const keyValues = (rows) => h('dl', null, rows.map(([k, v]) => h('div', { class: 'kv-row' }, h('dt', null, k), h('dd', null, v))));
+
+  const labeled = (caption, control) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, caption), control);
+  const input = (name, attrs) => h('input', Object.assign({ name, class: 'input' }, attrs));
+  const select = (name, options, selected) =>
+    h('select', { name, class: 'input' }, options.map((o) => h('option', { value: o.value, selected: o.value === selected }, o.label)));
+  const errLabel = () => h('p', { class: 'form-err', role: 'alert' });
+  const valuesOf = (fields) => Object.fromEntries(Object.entries(fields).map(([k, el]) => [k, el.value]));
+
+  // Keeps "09:00 AM", "Oct 22, 2026" and phone numbers on one line in narrow table columns.
+  const nw = (text) => h('span', { class: 'nw' }, text);
+  const range = (text) => text.split(' - ').flatMap((part, i) => (i ? [' - ', nw(part)] : [nw(part)]));
+  const doc = (name) => name.replace(/^Dr\. /, 'Dr.\u00a0');   // never leave "Dr." alone at the end of a line
+
+  const stack = (...items) => h('div', { class: 'stack' }, items);
+  const grid = (...items) => h('div', { class: 'grid' }, items);
+  const narrow = (el, width) => h('div', { class: 'narrow w' + width }, el);
+})();
+h() builds every element on every screen. It always adds text as plain text, never as HTML, so a patient who types <script> as a name just has an odd name. The icons are the desktop's Ico shapes redrawn as SVG paths, and card, table, stat, badge and avatar are the desktop's components of the same names.
+Step 6.2: The pop-up message and talking to the server
+Paste just above the last line, })();:
+  // =====================================================================
+  //  POP-UP MESSAGE (the desktop ToastPane)
+  // =====================================================================
+  let toastTimer = 0;
+  function toast(message, tone) {
+    const red = tone === 'red' ? ' toast-red' : '';
+    toastBox.querySelector('.toast-text').textContent = message;
+    toastBox.className = 'toast show' + red;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastBox.className = 'toast' + red; }, 3000);
+  }
+
+  // =====================================================================
+  //  TALKING TO THE JAVA SERVER
+  // =====================================================================
+
+  /** Without data: GET /api/<path>. With data: POST it as a form. Returns the server's JSON answer. */
+  async function api(path, data) {
+    const options = { credentials: 'same-origin', headers: { 'X-MediQueue': '1' } };
+    if (data !== undefined) {
+      options.method = 'POST';
+      options.body = new URLSearchParams(data);
+    }
+    let response;
+    try {
+      response = await fetch('/api/' + path, options);
+    } catch (e) {
+      throw Object.assign(new Error('Cannot reach the MediQueue server. Is it still running?'), { status: 0 });
+    }
+    let reply = {};
+    try { reply = await response.json(); } catch (e) { /* the answer was not JSON */ }
+    if (!response.ok) {
+      throw Object.assign(new Error(reply.error || 'Something went wrong (error ' + response.status + ').'), { status: response.status });
+    }
+    return reply;
+  }
+
+  /**
+   * Sends a change to the server, then shows the reply message and redraws the page with the new data.
+   * options.go: page to open afterwards; options.done: run after success; options.error: show errors yourself.
+   */
+  async function send(path, data, button, options) {
+    const opts = options || {};
+    if (button) button.disabled = true;
+    try {
+      const reply = await api(path, data);
+      if (reply.state) state = reply.state;
+      if (opts.done) opts.done(reply);
+      if (opts.go && currentPage() !== opts.go) location.hash = opts.go;   // the hashchange event redraws
+      else render();
+      if (reply.message) toast(reply.message, reply.tone);
+      return reply;
+    } catch (error) {
+      if (error.status === 401) signedOut('Please sign in again to continue.');
+      else if (opts.error) opts.error(error.message);
+      else toast(error.message, 'red');
+      return null;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+toast shows a message for 3 seconds with a green or red dot, like the desktop's ToastPane. api talks to the server: without data it sends a GET; with data it POSTs a form plus the X-MediQueue header the server asks for. send is what every button uses: it disables the button while waiting, keeps the new state, redraws the page and shows the server's message. If the server answers 401 (the sign-in ended), it returns to the sign-in card.
+Step 6.3: What the page remembers
+Paste just above the last line, })();:
+  // =====================================================================
+  //  WHAT THE PAGE REMEMBERS
+  // =====================================================================
+  let state = null;          // everything the server sent for the signed-in user (null = nobody signed in)
+  let authView = 'login';    // which sign-in card is showing: login, register or forgot
+  let loginRole = 'patient'; // the Patient / Admin choice on the sign-in card
+  let prefillUser = '';      // username to show again after a password reset
+  let calMonth = null;       // month shown in "My Schedule": { year, month } with month 0-11
+  let scheduleDoctor = '';   // doctor chosen on the Schedules page
+  let patientSearch = '';    // text typed in the Patients search box
+  let navOpen = false;       // side menu open (small screens only)
+  const modals = [];         // open dialogs, newest last
+
+  const NAV = {
+    patient: [['home', 'Home', 'home'], ['book', 'Book Appointment', 'cal'], ['appointments', 'My Appointments', 'list'],
+      ['queue', 'Queue Status', 'users'], ['profile', 'Profile', 'user']],
+    admin: [['home', 'Dashboard', 'home'], ['appointments', 'Appointments', 'cal'], ['queue', 'Queue', 'list'],
+      ['patients', 'Patients', 'users'], ['doctors', 'Doctors', 'user'], ['schedules', 'Schedules', 'clock'], ['reports', 'Reports', 'chart']],
+  };
+  const isAdmin = () => state !== null && state.user.role === 'admin';
+
+  /** The page named after # in the address, if this user has such a page; otherwise home. */
+  function currentPage() {
+    const wanted = location.hash.slice(1);
+    return state && NAV[state.user.role].some((n) => n[0] === wanted) ? wanted : 'home';
+  }
+
+  function render() {
+    if (state) renderApp();
+    else renderAuth();
+  }
+state holds what the server sent; the other variables remember what is on screen. NAV lists the same pages, labels and icons as the desktop's NAV_PATIENT and NAV_ADMIN. The page name lives in the address after # (for example #queue), so a refresh or the Back button keeps you on the right page.
+Step 6.4: Sign in, register and reset password
+Paste just above the last line, })();:
+  // =====================================================================
+  //  SIGN IN / REGISTER / FORGOT PASSWORD
+  // =====================================================================
+  function renderAuth() {
+    document.title = 'Sign in - MediQueue';
+    const view = authView === 'register' ? registerView() : authView === 'forgot' ? forgotView() : loginView();
+    app.replaceChildren(h('main', { class: 'auth' },
+      h('div', { class: 'auth-card' },
+        h('div', { class: 'auth-brand' },
+          h('span', { class: 'mark mark-lg' }, icon('plus', 30)),
+          h('h1', null, 'MediQueue'),
+          h('p', null, 'Clinic Appointment & Queue System')),
+        view)));
+    // On a computer, put the cursor in the first empty box (on phones this would pop up the keyboard).
+    const empty = Array.from(app.querySelectorAll('input')).find((i) => !i.value);
+    if (empty && window.matchMedia('(min-width: 861px)').matches) empty.focus();
+  }
+
+  function showAuth(view) {
+    authView = view;
+    renderAuth();
+  }
+
+  const backLink = () =>
+    h('div', null, h('button', { type: 'button', class: 'link-btn', onclick: () => showAuth('login') }, '← Back to sign in'));
+
+  function loginView() {
+    const user = input('username', { autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', value: prefillUser });
+    const pass = input('password', { type: 'password', autocomplete: 'current-password' });
+    const err = errLabel();
+    const hint = h('p', { class: 'auth-hint' });
+    const regLink = h('button', { type: 'button', class: 'link-btn', onclick: () => showAuth('register') }, 'New patient? Register');
+    const roles = ['patient', 'admin'].map((r) =>
+      h('button', { type: 'button', class: 'role-btn', 'data-role': r, onclick: () => setRole(r) }, r === 'patient' ? 'Patient' : 'Admin'));
+
+    function setRole(r) {   // the desktop setLoginRole()
+      loginRole = r;
+      err.textContent = '';
+      for (const b of roles) {
+        const on = b.dataset.role === r;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+      }
+      regLink.hidden = r !== 'patient';
+      hint.textContent = r === 'admin' ? 'Authorized clinic staff only.' : 'Sign in with your registered patient account.';
+    }
+    setRole(loginRole);
+
+    const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Sign In');
+    const form = h('form', { class: 'form', novalidate: true },
+      h('div', { class: 'roles', role: 'group', 'aria-label': 'Sign in as' }, roles),
+      labeled('Username', user), labeled('Password', pass), err, submit,
+      h('div', { class: 'auth-links' },
+        h('button', { type: 'button', class: 'link-btn', onclick: () => showAuth('forgot') }, 'Forgot password?'), regLink),
+      hint);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submit.disabled = true;
+      try {
+        signedIn(await api('login', { username: user.value, password: pass.value, role: loginRole }));
+      } catch (error) {
+        err.textContent = error.message;
+        pass.value = '';
+        pass.focus();
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    return form;
+  }
+
+  function registerView() {
+    const f = {
+      name: input('name', { autocomplete: 'name', maxlength: 60 }),
+      contact: input('contact', { autocomplete: 'tel', inputmode: 'tel', maxlength: 20 }),
+      username: input('username', { autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: 20 }),
+      password: input('password', { type: 'password', autocomplete: 'new-password' }),
+      password2: input('password2', { type: 'password', autocomplete: 'new-password' }),
+    };
+    const err = errLabel();
+    const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Create Account');
+    const form = h('form', { class: 'form form-tight', novalidate: true },
+      h('h2', { class: 'auth-title' }, 'Create a patient account'),
+      labeled('Full name', f.name), labeled('Contact number', f.contact), labeled('Username', f.username),
+      labeled('Password (6+ characters)', f.password), labeled('Confirm password', f.password2),
+      err, submit, backLink());
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submit.disabled = true;
+      try {
+        signedIn(await api('register', valuesOf(f)));
+      } catch (error) {
+        err.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    return form;
+  }
+
+  function forgotView() {
+    const f = {
+      username: input('username', { autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' }),
+      contact: input('contact', { autocomplete: 'tel', inputmode: 'tel' }),
+      password: input('password', { type: 'password', autocomplete: 'new-password' }),
+      password2: input('password2', { type: 'password', autocomplete: 'new-password' }),
+    };
+    const err = errLabel();
+    const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Reset Password');
+    const form = h('form', { class: 'form form-tight', novalidate: true },
+      h('h2', { class: 'auth-title' }, 'Reset your password'),
+      h('p', { class: 'auth-text' }, 'Enter your username and the contact number you registered with.'),
+      labeled('Username', f.username), labeled('Registered contact number', f.contact),
+      labeled('New password (6+ characters)', f.password), labeled('Confirm new password', f.password2),
+      err, submit, backLink());
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submit.disabled = true;
+      try {
+        const reply = await api('reset', valuesOf(f));
+        prefillUser = reply.username;
+        loginRole = 'patient';
+        showAuth('login');
+        toast(reply.message, reply.tone);
+      } catch (error) {
+        err.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    return form;
+  }
+
+  /** After a successful sign-in or registration (the desktop startSession). */
+  function signedIn(reply) {
+    state = reply.state;
+    authView = 'login';
+    prefillUser = '';
+    patientSearch = '';
+    scheduleDoctor = '';
+    calMonth = null;
+    navOpen = false;
+    history.replaceState(null, '', '#home');
+    render();
+    toast(reply.message, reply.tone);
+  }
+
+  /** Back to the sign-in card, for example when the server was restarted and forgot the sign-in. */
+  function signedOut(message, tone) {
+    state = null;
+    closeAllModals();
+    authView = 'login';
+    loginRole = 'patient';
+    navOpen = false;
+    history.replaceState(null, '', location.pathname);
+    render();
+    if (message) toast(message, tone || 'red');
+  }
+
+  async function logout() {
+    try {
+      const reply = await api('logout', {});
+      signedOut(reply.message, reply.tone);
+    } catch (error) {
+      signedOut('You have been logged out.', 'green');
+    }
+  }
+The three cards (sign in, register, reset password) share one frame and use the desktop's labels and messages. Each is a real <form>, so Enter submits it, as it did in the desktop's text fields. signedIn keeps the state, moves to #home and shows "Welcome, ...!"; signedOut clears everything and goes back to the sign-in card.
+Step 6.5: The app shell
+Paste just above the last line, })();:
+  // =====================================================================
+  //  APP SHELL: sidebar + header + page
+  // =====================================================================
+  function renderApp() {
+    const page = currentPage();
+    const items = NAV[state.user.role];
+    const label = items.find((n) => n[0] === page)[1];
+    document.title = label + ' - MediQueue';
+
+    const sidebar = h('aside', { class: 'sidebar', id: 'sidebar' },
+      h('div', { class: 'brand' },
+        h('span', { class: 'mark' }, icon('plus', 22)),
+        h('span', { class: 'brand-text' }, h('strong', null, 'MediQueue'), h('small', null, 'Clinic Appointment &', h('br'), 'Queue System'))),
+      h('nav', { class: 'nav', 'aria-label': 'Main menu' }, items.map(([key, text, ico]) =>
+        h('a', {
+          class: 'nav-item' + (key === page ? ' on' : ''), href: '#' + key, 'aria-current': key === page ? 'page' : null,
+          onclick: () => { if (key === currentPage()) setNav(false); },
+        }, icon(ico, 18), h('span', null, text)))),
+      h('div', { class: 'side-foot' },
+        avatar(state.user.name, 34),
+        h('span', { class: 'side-user' }, h('strong', null, state.user.firstName), h('small', null, state.user.roleLabel)),
+        h('button', { type: 'button', class: 'icon-btn', title: 'Logout', 'aria-label': 'Logout', onclick: logout }, icon('out', 20))));
+
+    const topbar = h('div', { class: 'topbar' },
+      h('button', {
+        type: 'button', class: 'icon-btn menu-btn', 'aria-label': 'Open menu', 'aria-controls': 'sidebar',
+        'aria-expanded': String(navOpen), onclick: () => setNav(!navOpen),
+      }, icon('menu', 22)),
+      h('span', { class: 'mark mark-sm' }, icon('plus', 16)),
+      h('strong', null, 'MediQueue'));
+
+    app.replaceChildren(h('div', { class: 'shell' + (navOpen ? ' nav-open' : '') },
+      sidebar,
+      h('div', { class: 'scrim', onclick: () => setNav(false) }),
+      h('div', { class: 'main' }, topbar, pageHeader(page, label), h('main', { class: 'content' }, pageBody(page)))));
+  }
+
+  /** Opens or closes the slide-out menu on small screens. */
+  function setNav(open) {
+    navOpen = open;
+    const shell = app.querySelector('.shell');
+    if (shell) shell.classList.toggle('nav-open', open);
+    const button = app.querySelector('.menu-btn');
+    if (button) button.setAttribute('aria-expanded', String(open));
+  }
+
+  function pageHeader(page, label) {
+    let title;
+    let sub;
+    if (isAdmin()) {
+      title = page === 'home' ? 'Admin Dashboard' : label;
+      sub = 'Manage appointments, queues, patients, and doctor schedules.';
+    } else if (page === 'home') {
+      const hr = state.now.hour;
+      title = (hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening') + ', ' + state.user.firstName + '!';
+      sub = "Take care of your health. We're here for you.";
+    } else {
+      title = label;
+      sub = 'MediQueue patient portal';
+    }
+    return h('header', { class: 'page-head' },
+      h('div', null, h('h1', null, title), h('p', null, sub)),
+      h('div', { class: 'head-right' },
+        isAdmin() ? h('span', { class: 'chip' }, icon('cal', 16), state.now.dateLabel) : h('span', { class: 'bell' }, icon('bell', 22)),
+        avatar(state.user.name, 38),
+        h('span', { class: 'head-user' }, h('strong', null, state.user.name), h('small', null, state.user.roleLabel))));
+  }
+
+  // TEMPORARY (Phase 6): every page shows this card until Phases 7 and 8 build the real pages.
+  function pageBody(page) {
+    return card('Coming soon', null, h('p', { class: 'muted' }, 'The "' + page + '" page is built in a later phase.'));
+  }
+renderApp builds the screen from four parts: the sidebar (logo, menu, the signed-in user and the Logout button), a top bar that only shows on small screens, the page header, and the page itself. pageHeader greets patients by the time of day, like the desktop's buildHeader. The last function, pageBody, is a placeholder that Phase 7 replaces.
+Step 6.6: Dialogs
+Paste just above the last line, })();:
+  // =====================================================================
+  //  DIALOGS
+  // =====================================================================
+
+  /** Shows content in a dialog over the page. Returns an object with close(). */
+  function openModal(content, width, label) {
+    const box = h('div', { class: 'dialog w' + width, role: 'dialog', 'aria-modal': 'true', 'aria-label': label }, content);
+    const overlay = h('div', { class: 'overlay' }, box);
+    const previous = document.activeElement;
+    const m = {
+      close() {
+        const i = modals.indexOf(m);
+        if (i === -1) return;
+        modals.splice(i, 1);
+        overlay.remove();
+        app.inert = modals.length > 0;
+        if (previous && document.contains(previous)) previous.focus();
+      },
+    };
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) m.close(); });
+    document.body.append(overlay);
+    modals.push(m);
+    app.inert = true;   // the page behind the dialog cannot be clicked or tabbed into
+    const first = box.querySelector('input:not([readonly]), select, button');
+    if (first) first.focus();
+    return m;
+  }
+
+  function closeAllModals() {
+    while (modals.length) modals[modals.length - 1].close();
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modals.length) modals[modals.length - 1].close();
+  });
+
+  /** A Yes / No question (the desktop ask()). */
+  function ask(title, message, onYes) {
+    const m = openModal(h('div', { class: 'dialog-body' },
+      h('h2', { class: 'ask-title' }, title),
+      h('p', { class: 'muted' }, message),
+      h('div', { class: 'btn-row' },
+        btn('No', 'neutral', () => m.close()),
+        btn('Yes', 'danger', () => { m.close(); onYes(); }))), 380, title);
+  }
+openModal shows a dialog over the page and puts the cursor in it; Escape or a click outside closes it, and the page behind cannot be clicked while it is open. ask is the desktop's Yes/No question. Phases 7 and 8 build their dialogs on these two.
+Step 6.7: Starting up
+Paste just above the last line, })();. This part stays at the bottom of the file from now on:
+  // =====================================================================
+  //  KEEPING THE PAGE UP TO DATE
+  // =====================================================================
+
+  window.addEventListener('hashchange', () => {
+    if (!state) return;
+    closeAllModals();
+    navOpen = false;
+    render();
+    window.scrollTo(0, 0);
+  });
+
+  // Start: if this browser is still signed in, the server sends the state; otherwise show the sign-in card.
+  (async function start() {
+    try {
+      state = (await api('state')).state;
+    } catch (error) {
+      state = null;
+      if (error.status !== 401) toast(error.message, 'red');
+    }
+    render();
+  })();
+hashchange redraws when the part of the address after # changes, from a menu click or the Back button. start runs once when the page opens: it asks the server who is signed in on this browser, then draws the sign-in card or the app.
+Checkpoint 6
+Save app.js and refresh http://localhost:8080.
+•☐ The sign-in card shows, with Patient selected.
+•☐ On the Admin tab, aldred with a wrong password shows "Invalid username or password." and empties the password box.
+•☐ aldred / aldred06 opens "Admin Dashboard": the navy sidebar with 7 pages, the toast "Welcome, Mark!", and a "Coming soon" card.
+•☐ Queue in the sidebar changes the title and the address ends with #queue. After a refresh you are still signed in, on Queue.
+•☐ The arrow button at the bottom of the sidebar logs out with "You have been logged out."
+•☐ New patient? Register creates an account and greets you by first name, with 5 pages in the sidebar.
+•☐ Log out, then Forgot password? with that username and contact number: "Password updated. You can now sign in." appears and the username is filled in.
+•☐ Sign in again, then make the window narrower than 860px: the sidebar hides and a menu button at the top opens and closes it.
+Phase 7: app.js, part 2 (patient pages)
+Phase 7 builds the five patient pages. Each function draws one part of the desktop's patient screens:
+Web (app.js)	Desktop (MediQueue.java)
+patientHome	patientHome()
+apptItem, myAppointmentsCard	apptItem(), wMyAppts()
+queueCard	wQueue()
+scheduleCard	wSchedule()
+bookCard	wBook()
+profileCard	wProfile()
+cancelDialog	cancelDialog()
+Step 7.1: The patient pages
+Paste this part above the KEEPING THE PAGE UP TO DATE section (above its first // ==== line), not at the very bottom:
+  // =====================================================================
+  //  PATIENT PAGES
+  // =====================================================================
+  function patientHome() {
+    const up = state.upcoming;
+    const myNumber = state.queue.myNumber;
+    return stack(
+      h('div', { class: 'stats stats-3' },
+        stat('blue', 'cal', 'Upcoming Appointment', up ? up.dateLabel : 'None', up ? up.doctor : 'Book one today', up ? 'appointments' : 'book'),
+        stat('green', 'users', 'Current Queue', '# ' + (myNumber || '-'), 'OPD - General Medicine', 'queue'),
+        stat('purple', 'card', 'Reservation Fee', state.fee, '(per appointment)', 'profile')),
+      grid(myAppointmentsCard(), queueCard(), scheduleCard()));
+  }
+
+  function apptItem(a) {
+    return h('div', { class: 'appt' },
+      h('div', { class: 'appt-date' }, h('span', { class: 'appt-mo' }, a.month), h('span', { class: 'appt-dy' }, a.day)),
+      h('div', { class: 'appt-info' }, h('strong', null, a.doctor), h('span', null, a.spec), h('span', null, a.timeLabel)),
+      h('div', { class: 'appt-side' }, badge(a.status), a.live ? btn('Cancel', 'danger', () => cancelDialog(a), true) : null));
+  }
+
+  function myAppointmentsCard() {
+    const items = state.appointments.length ? state.appointments.map(apptItem) : h('p', { class: 'muted' }, 'No appointments yet.');
+    return card('My Appointments', currentPage() === 'appointments' ? null : { go: 'appointments' }, h('div', { class: 'list' }, items));
+  }
+
+  function queueCard() {
+    const q = state.queue;
+    const box = h('div', { class: 'qbox' },
+      h('span', { class: 'qbox-ico' }, icon('users', 22)),
+      h('div', null,
+        h('div', { class: 'qbox-label' }, 'Your Queue Number'),
+        h('div', { class: 'qbox-num' }, '# ' + (q.myNumber || '-')),
+        h('div', { class: 'qbox-sub' }, 'OPD - General Medicine')));
+    const rows = q.rows.map((r) => [String(r.no), r.name, badge(r.status)]);
+    return card('Queue Status', { note: 'Last updated: ' + state.now.time }, box, table(['No.', 'Patient Name', 'Status'], rows, q.myNumber - 1));
+  }
+
+  /** The month calendar with your appointment days marked (the desktop wSchedule). */
+  function scheduleCard() {
+    const [ty, tm] = state.now.date.split('-').map(Number);
+    if (!calMonth) calMonth = { year: ty, month: tm - 1 };
+    const { year, month } = calMonth;
+    const marks = new Set(state.appointments.filter((a) => a.live).map((a) => a.date));
+    const next = state.upcoming ? state.upcoming.date : null;
+    const pad = (n) => String(n).padStart(2, '0');
+
+    const cells = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => h('span', { class: 'cal-head' }, d));
+    const firstDay = new Date(year, month, 1).getDay();
+    for (let i = 0; i < firstDay; i++) cells.push(h('span'));
+    const days = new Date(year, month + 1, 0).getDate();
+    for (let d = 1; d <= days; d++) {
+      const iso = year + '-' + pad(month + 1) + '-' + pad(d);
+      cells.push(h('span', { class: 'cal-day' + (iso === next ? ' sel' : marks.has(iso) ? ' mark' : '') }, String(d)));
+    }
+    const move = (delta) => {
+      const m = new Date(year, month + delta, 1);
+      calMonth = { year: m.getFullYear(), month: m.getMonth() };
+      render();
+    };
+    const monthName = new Date(year, month, 1).toLocaleString('en-US', { month: 'long' });
+    return card('My Schedule', null,
+      h('div', { class: 'cal-nav' },
+        h('button', { type: 'button', class: 'btn btn-light btn-mini', 'aria-label': 'Previous month', onclick: () => move(-1) }, icon('prev', 14)),
+        h('strong', { 'aria-live': 'polite' }, monthName + ' ' + year),
+        h('button', { type: 'button', class: 'btn btn-light btn-mini', 'aria-label': 'Next month', onclick: () => move(1) }, icon('next', 14))),
+      h('div', { class: 'cal-grid' }, cells),
+      h('h3', { class: 'sub-title' }, 'Quick Actions'),
+      h('div', { class: 'btn-stack' }, linkBtn('Book Appointment', 'primary', 'book'), linkBtn('View Queue', 'soft', 'queue')));
+  }
+
+  function bookCard() {
+    const o = state.booking;
+    const doctor = select('doctor', o.doctors);
+    const date = select('date', o.dates);
+    const time = select('time', o.times);
+    const submit = h('button', { type: 'submit', class: 'btn btn-primary' }, 'Book Appointment');
+    const form = h('form', { class: 'form', novalidate: true },
+      labeled('Doctor', doctor), labeled('Date (clinic is closed on Sundays)', date), labeled('Time slot', time), submit);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      send('book', { doctor: doctor.value, date: date.value, time: time.value }, submit, { go: 'appointments' });
+    });
+    return card('Book Appointment', null, form);
+  }
+
+  function profileCard() {
+    const p = state.profile;
+    return card('Profile', null, keyValues([
+      ['Name', p.name], ['Patient ID', p.patientId], ['Contact', p.contact], ['Reservation fee', state.fee + ' per appointment']]));
+  }
+
+  /** Cancel Appointment: details and a warning, then a Confirm Cancellation question. */
+  function cancelDialog(a) {
+    const m = openModal(h('div', { class: 'dialog-body' },
+      h('h2', { class: 'dlg-title' }, 'Cancel Appointment'),
+      h('h3', { class: 'dlg-sub' }, 'Appointment Details'),
+      keyValues([['Appointment ID', a.id], ['Patient Name', a.patient], ['Doctor', a.doctor], ['Date', a.dateLabel],
+        ['Time', a.timeLabel], ['Status', badge(a.status)]]),
+      h('p', { class: 'warn' }, 'Are you sure you want to cancel this appointment?', h('br'), 'This action cannot be undone.'),
+      h('div', { class: 'btn-row' },
+        btn('Cancel Appointment', 'danger', () =>
+          ask('Confirm Cancellation', 'Do you want to cancel this appointment?', () => send('cancel', { id: a.id }, null, { done: closeAllModals }))),
+        btn('Back', 'neutral', () => m.close()))), 440, 'Cancel Appointment');
+  }
+Every card reads from state, which the server builds in Step 3.5. The booking form only offers the dates and times the server sent, and send('book', ...) opens My Appointments afterwards. cancelDialog asks twice, as the desktop does: first the details with a warning, then Confirm Cancellation.
+Step 7.2: Show the patient pages
+Replace the temporary pageBody from Step 6.5 (the // TEMPORARY line and the three-line function under it) with:
+  function pageBody(page) {
+    if (!isAdmin()) {
+      switch (page) {
+        case 'home': return patientHome();
+        case 'book': return narrow(bookCard(), 560);
+        case 'appointments': return narrow(myAppointmentsCard(), 820);
+        case 'queue': return narrow(queueCard(), 700);
+        default: return narrow(profileCard(), 520);
+      }
+    }
+    // TEMPORARY (Phase 7): the clinic staff pages are built in Phase 8.
+    return card('Coming soon', null, h('p', { class: 'muted' }, 'The clinic staff pages are built in Phase 8.'));
+  }
+The widths (560, 820, 700, 520) are the ones the desktop's narrow() calls use for each page.
+Checkpoint 7
+Refresh the browser, log out, and sign in as a patient: tiffany / tiffany012.
+•☐ Home shows three stat cards, then My Appointments, Queue Status and My Schedule.
+•☐ Queue Status lists the other patients by short names, such as "Carlo S.".
+•☐ Book Appointment: pick a doctor, a date and a time. You land on My Appointments with "Booked with ..." and the new appointment.
+•☐ Booking the same doctor, date and time again shows "That slot is already booked. Pick another time."
+•☐ Cancel, then Cancel Appointment, then Yes: the badge turns "Cancelled". Escape closes an open dialog.
+•☐ The calendar arrows move between months, and your next appointment day is circled in blue.
+•☐ Profile shows your patient ID.
+•☐ Signed in as aldred, the staff pages say "The clinic staff pages are built in Phase 8."
+Phase 8: app.js, part 3 (clinic staff pages)
+Phase 8 builds the seven clinic staff pages and their two dialogs, each matching a desktop method:
+Web (app.js)	Desktop (MediQueue.java)
+adminStats	adminStats()
+todayCard, queueOverviewCard, quickActionsCard	wToday(), wQueueOverview(), wQuick()
+doctorsCard, recentPatientsCard, summaryCard	wDocs(), wRecent(), wSummary()
+appointmentsCard	wAppMgmt()
+counters, queueManageCard	counters(), wQueueMgmt()
+patientsCard	wPatients(), fillPatientTable()
+schedulesCard	wSchedMgmt()
+patientDialog, scheduleDialog	patientDialog(), scheduleDialog()
+Step 8.1: The clinic staff pages
+Paste above the KEEPING THE PAGE UP TO DATE section, below the patient pages:
+  // =====================================================================
+  //  CLINIC STAFF PAGES
+  // =====================================================================
+  function adminStats() {
+    const s = state.stats;
+    return h('div', { class: 'stats stats-4' },
+      stat('blue', 'cal', 'Total Appointments', String(s.appointments), 'All bookings'),
+      stat('green', 'users', 'Total Patients', String(s.patients), 'Registered'),
+      stat('purple', 'hash', 'Current Queue', s.currentQueue ? '# ' + s.currentQueue : '-', 'OPD - General Medicine'),
+      stat('rose', 'user', 'Doctors On Duty', s.onDuty + ' / ' + s.doctorCount, 'Today'));
+  }
+
+  function todayCard() {
+    const rows = state.appointments.filter((a) => a.date === state.now.date).map((a) => [nw(a.timeLabel), a.patient, doc(a.doctor), badge(a.status)]);
+    return card("Today's Appointments", { go: 'appointments' }, table(['Time', 'Patient', 'Doctor', 'Status'], rows));
+  }
+
+  function queueOverviewCard() {
+    const rows = state.queue.rows.map((q) => [q.no, q.name, badge(q.status)]);
+    return card('Queue Overview', { go: 'queue' }, table(['Queue No.', 'Patient', 'Status'], rows));
+  }
+
+  function quickActionsCard() {
+    return card('Quick Actions', null, h('div', { class: 'btn-stack' },
+      linkBtn('Manage Appointments', 'primary', 'appointments'), linkBtn('Manage Schedule', 'soft', 'schedules'),
+      linkBtn('Manage Patients', 'soft', 'patients'), linkBtn('Manage Queue', 'soft', 'queue')));
+  }
+
+  function doctorsCard() {
+    const rows = state.doctors.map((d) => [doc(d.name), d.spec, range(d.hours)]);
+    return card('Doctor Schedule', currentPage() === 'home' ? { go: 'doctors' } : null, table(['Doctor', 'Specialization', 'Available Today'], rows));
+  }
+
+  function recentPatientsCard() {
+    const rows = state.patients.slice(0, 5).map((p) => [p.name, nw(p.contact), nw(p.visit)]);
+    return card('Recent Patients', { go: 'patients' }, table(['Patient', 'Contact No.', 'Last Visit'], rows));
+  }
+
+  function summaryCard() {
+    const s = state.summary;
+    const rows = [['Active Appointments', s.active, 'blue'], ['In Queue', s.inQueue, 'green'],
+      ['Completed Today', s.completed, 'purple'], ['Cancelled', s.cancelled, 'rose']];
+    return card('System Summary', null, h('ul', { class: 'summary' },
+      rows.map(([text, n, color]) => h('li', null, h('span', { class: 'dot bg-' + color }), h('span', null, text), h('strong', null, String(n))))));
+  }
+
+  function appointmentsCard() {
+    const rows = state.appointments.map((a) => [a.id, a.patient, doc(a.doctor), nw(a.dateLabel), nw(a.timeLabel), badge(a.status),
+      h('div', { class: 'actions' },
+        a.canConfirm ? btn('Confirm', 'success', (e) => send('confirm', { id: a.id }, e.currentTarget), true) : null,
+        a.live ? btn('Cancel', 'danger', () => cancelDialog(a), true) : null)]);
+    return card('Upcoming Appointments', null, table(['ID', 'Patient Name', 'Doctor', 'Date', 'Time', 'Status', 'Actions'], rows));
+  }
+
+  function counters() {
+    const c = state.counters;
+    return h('div', { class: 'counters' },
+      [['Waiting', c.waiting, 'green'], ['In Consultation', c.inConsultation, 'blue'], ['Completed', c.completed, 'slate']].map(([text, n, color]) =>
+        h('div', { class: 'counter bg-' + color }, h('strong', null, String(n)), h('span', null, text))));
+  }
+
+  function queueManageCard() {
+    const rows = state.queue.rows.map((q) => {
+      let action = null;
+      const who = { index: q.index, name: q.name };
+      if (q.status === 'In Consultation') action = btn('Complete', 'success', (e) => send('queue/complete', who, e.currentTarget), true);
+      else if (q.status !== 'Completed') action = btn('Call', 'primary', (e) => send('queue/call', who, e.currentTarget), true);
+      return [q.no, q.name, doc(q.doctor), badge(q.status), h('div', { class: 'actions' }, action)];
+    });
+    return card('Patient Queue', null,
+      h('div', { class: 'toolbar' }, btn('Call Next Patient', 'primary', (e) => send('queue/next', {}, e.currentTarget))),
+      table(['Queue No.', 'Patient Name', 'Doctor', 'Status', 'Action'], rows));
+  }
+
+  function patientsCard() {
+    const search = input('search', {
+      type: 'search', value: patientSearch, placeholder: 'Search by name or patient ID', 'aria-label': 'Search patients', autocomplete: 'off',
+    });
+    const tableBox = h('div');
+    const fill = () => {   // like fillPatientTable(): only the table is redrawn while typing
+      const q = patientSearch.trim().toLowerCase();
+      const rows = state.patients
+        .filter((p) => !q || (p.name + ' ' + p.id).toLowerCase().includes(q))
+        .map((p) => [p.id, p.name, p.age || '-', p.gender || '-', nw(p.contact),
+          h('div', { class: 'actions' },
+            btn('Edit', 'primary', () => patientDialog(p), true),
+            btn('Delete', 'danger', () => ask('Delete Patient', 'Delete the record of ' + p.name + '?', () => send('patients/delete', { id: p.id })), true))]);
+      tableBox.replaceChildren(table(['Patient ID', 'Name', 'Age', 'Gender', 'Contact', 'Actions'], rows));
+    };
+    search.addEventListener('input', () => {
+      patientSearch = search.value;
+      fill();
+    });
+    fill();
+    return card('Patient Information & Database', null,
+      h('div', { class: 'toolbar toolbar-split' },
+        h('div', { class: 'search' }, icon('search', 16), search),
+        btn('Add Patient', 'primary', () => patientDialog(null))),
+      tableBox);
+  }
+
+  function schedulesCard() {
+    if (!scheduleDoctor) scheduleDoctor = state.doctors[0].name;
+    const pick = select('doctor', state.doctors.map((d) => ({ value: d.name, label: d.name })), scheduleDoctor);
+    pick.setAttribute('aria-label', 'Doctor');
+    const rows = state.schedules.filter((s) => s.doctor === scheduleDoctor).map((s) => [nw(s.dateLabel), s.day, range(s.slots),
+      badge(s.ok ? 'Available' : 'Not Available'),
+      h('div', { class: 'actions' },
+        btn(s.ok ? 'Mark Off' : 'Mark On', 'primary', (e) => send('schedules/toggle', { id: s.id }, e.currentTarget), true),
+        btn('Remove', 'danger', (e) => send('schedules/remove', { id: s.id }, e.currentTarget), true))]);
+    return card('Doctor Schedule Management', null,
+      h('div', { class: 'toolbar' }, pick,
+        btn('Load Schedule', 'primary', () => { scheduleDoctor = pick.value; render(); }),
+        btn('Add Schedule', 'soft', () => { scheduleDoctor = pick.value; scheduleDialog(); })),
+      table(['Date', 'Day', 'Available Time Slots', 'Status', 'Actions'], rows));
+  }
+
+  /** Add Patient (p = null) or Edit Patient. */
+  function patientDialog(p) {
+    const f = {
+      name: input('name', { value: p ? p.name : '', maxlength: 60, autocomplete: 'off' }),
+      age: input('age', { value: p ? p.age : '', inputmode: 'numeric', maxlength: 3, autocomplete: 'off' }),
+      gender: select('gender', ['Female', 'Male', 'Other'].map((g) => ({ value: g, label: g })), p && p.gender ? p.gender : 'Female'),
+      contact: input('contact', { value: p ? p.contact : '', inputmode: 'tel', maxlength: 20, autocomplete: 'off' }),
+    };
+    const err = errLabel();
+    const save = h('button', { type: 'submit', class: 'btn btn-primary' }, 'Save');
+    const title = p ? 'Edit Patient' : 'Add Patient';
+    const form = h('form', { class: 'form', novalidate: true },
+      h('h2', { class: 'dlg-title' }, title),
+      labeled('Full name', f.name), labeled('Age', f.age), labeled('Gender', f.gender), labeled('Contact number', f.contact), err,
+      h('div', { class: 'btn-row' }, save, btn('Cancel', 'neutral', () => m.close())));
+    const m = openModal(form, 400, title);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      send('patients/save', Object.assign({ id: p ? p.id : '' }, valuesOf(f)), save, {
+        done: () => m.close(),
+        error: (message) => { err.textContent = message; },
+      });
+    });
+  }
+
+  function scheduleDialog() {
+    const o = state.scheduleOptions;
+    const doctor = input('doctor', { value: scheduleDoctor, readonly: true });
+    const date = select('date', o.dates);
+    const slots = select('slots', o.slots.map((s) => ({ value: s, label: s })));
+    const add = h('button', { type: 'submit', class: 'btn btn-primary' }, 'Add Schedule');
+    const form = h('form', { class: 'form', novalidate: true },
+      h('h2', { class: 'dlg-title' }, 'Add Schedule'),
+      labeled('Doctor', doctor), labeled('Date', date), labeled('Available time', slots),
+      h('div', { class: 'btn-row' }, add, btn('Cancel', 'neutral', () => m.close())));
+    const m = openModal(form, 400, 'Add Schedule');
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      send('schedules/add', { doctor: scheduleDoctor, date: date.value, slots: slots.value }, add, { done: () => m.close() });
+    });
+  }
+Buttons that change data pass themselves to send, which disables them until the server answers, so a double click cannot confirm an appointment twice. The Patients search redraws only the table, so the search box keeps your cursor while you type, as the desktop's fillPatientTable() did. A bad age or contact number shows inside the dialog, as on the desktop.
+Step 8.2: Show every page
+Replace the whole pageBody function from Step 7.2, including its // TEMPORARY line, with the final version:
+  function pageBody(page) {
+    if (!isAdmin()) {
+      switch (page) {
+        case 'home': return patientHome();
+        case 'book': return narrow(bookCard(), 560);
+        case 'appointments': return narrow(myAppointmentsCard(), 820);
+        case 'queue': return narrow(queueCard(), 700);
+        default: return narrow(profileCard(), 520);
+      }
+    }
+    switch (page) {
+      case 'home': return stack(adminStats(), grid(todayCard(), queueOverviewCard(), quickActionsCard()),
+        grid(doctorsCard(), recentPatientsCard(), summaryCard()));
+      case 'appointments': return appointmentsCard();
+      case 'queue': return stack(counters(), queueManageCard());
+      case 'patients': return patientsCard();
+      case 'doctors': return doctorsCard();
+      case 'schedules': return schedulesCard();
+      default: return stack(adminStats(), narrow(summaryCard(), 520));
+    }
+  }
+This is the desktop's buildBody() written for the browser.
+Checkpoint 8
+Refresh. You are still signed in as staff from Checkpoint 7; if not, sign in on the Admin tab as aldred / aldred06.
+•☐ Dashboard: four stat cards, then Today's Appointments, Queue Overview, Quick Actions, Doctor Schedule, Recent Patients and System Summary.
+•☐ Appointments: Confirm shows "Appointment confirmed."; Cancel asks twice, then the badge turns "Cancelled".
+•☐ Queue: Call Next Patient calls the first waiting patient (Carlo Santos in the sample data); Call and Complete update the badges and the three counters.
+•☐ Patients: typing "maria" filters the table as you type. Add Patient with age 999 shows "Please enter a valid age (0-120)." in the dialog; a valid patient saves; Edit opens pre-filled; Delete asks first.
+•☐ Schedules: pick a doctor and Load Schedule; Add Schedule adds a row; Mark Off turns it "Not Available".
+•☐ Doctors and Reports open.
+Phase 9: app.js, part 4 (live updates and the phone layout)
+The desktop app is one window on one computer, so it always shows its own latest data. On the web, a patient may watch Queue Status on a phone while staff call patients at the front desk. This last piece of app.js asks the server for fresh data every 15 seconds and redraws only when something changed. Then you check the whole app at phone size.
+Step 9.1: Refresh every 15 seconds
+In the KEEPING THE PAGE UP TO DATE section at the bottom of app.js, paste this right under the three header lines, above window.addEventListener('hashchange':
+  // Pages with forms are not redrawn on their own, so nothing you are typing gets wiped.
+  const PAGES_WITH_FORMS = ['book', 'patients', 'schedules'];
+
+  // Every 15 seconds, fetch the latest data so the queue moves on screen when staff call the next patient.
+  setInterval(async () => {
+    if (!state || document.hidden || modals.length || PAGES_WITH_FORMS.includes(currentPage())) return;
+    const focused = document.activeElement;
+    if (focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName)) return;
+    try {
+      const reply = await api('state');
+      if (!state || modals.length) return;   // signed out or a dialog opened in the meantime
+      if (!reply.state) {                     // the server no longer knows this sign-in (restarted, or 12 hours passed)
+        signedOut('Your session has ended. Please sign in again.');
+        return;
+      }
+      const changed = JSON.stringify(reply.state) !== JSON.stringify(state);
+      state = reply.state;
+      if (changed) render();
+    } catch (error) {
+      if (error.status === 401) signedOut('Your session has ended. Please sign in again.');
+    }
+  }, 15000);
+A round is skipped when:
+•nobody is signed in, or the tab is hidden (a minimized window or a background tab);
+•a dialog is open;
+•you are on Book, Patients or Schedules, or the cursor is in a box, so nothing you are typing gets wiped.
+The new data is compared with the old as text, so the page only redraws when something really changed. If the server sends no data at all, it has forgotten this sign-in (it was restarted, or 12 hours passed), so the page returns to the sign-in card with a message.
+Checkpoint 9
+app.js is complete. Save it and refresh the browser.
+•☐ Sign in as tiffany / tiffany012 and open Queue Status.
+•☐ Open a private window (Ctrl+Shift+N in Chrome and Edge, Ctrl+Shift+P in Firefox), go to http://localhost:8080 and sign in on the Admin tab as aldred / aldred06. A private window keeps its own sign-in; two normal windows of the same browser share one.
+•☐ Put the windows side by side. In the staff window, open Queue and click Call or Complete on a row. Within 15 seconds the patient window shows the new status by itself.
+•☐ In the patient window, open Book Appointment, pick a doctor and wait 20 seconds: your choice stays. Go back to Queue Status.
+•☐ Stop the server (Ctrl+C) and start it again with java -cp build mediqueue.MediQueueWeb --lan. Within 15 seconds of it starting, both windows return to the sign-in card with "Your session has ended. Please sign in again."
+•☐ The banner now also prints On other devices: http://...:8080. Open that address on a phone on the same Wi-Fi. If Windows asks whether to let Java through the firewall, allow it on private networks. No phone at hand? In the browser press F12, then Ctrl+Shift+M, and pick a phone such as iPhone 12 Pro.
+•☐ On the phone, signed in as tiffany: the sidebar hides behind a menu button, nothing scrolls sideways, and choosing a page from the menu closes it.
+•☐ Signed in as aldred, wide tables such as Appointments scroll sideways inside their card, not the whole page.
+Use --lan only on a network you trust, such as your home Wi-Fi: anyone on it can open the site. When you are done, stop the server and start it again without --lan.
+Phase 10: Build scripts, README and the two .jar files
+Until now you compiled with a long javac command and started the server from the build folder. This phase adds scripts that make two ready-to-run files, plus the README and overview that explain the project:
+•MediQueueWeb.jar: the web version, with the web folder packed inside, so it runs from any folder.
+•MediQueue.jar: the original desktop app.
+Stop the server (Ctrl+C) before you start. On Windows, a running server can keep its files locked.
+Step 10.1: The build scripts
+Create build.bat in the project folder, for Windows:
+@echo off
+rem Builds both versions of MediQueue (needs JDK 17 or newer):
+rem   MediQueueWeb.jar - the web version: run it, then open http://localhost:8080
+rem   MediQueue.jar    - the original desktop (Swing) version
+cd /d "%~dp0"
+if exist build rmdir /s /q build
+mkdir build
+javac --release 17 -encoding UTF-8 -d build src\MediQueueData.java src\MediQueueService.java src\MediQueueWeb.java src\Json.java src\MediQueue.java
+if errorlevel 1 exit /b 1
+jar --create --file MediQueueWeb.jar --main-class mediqueue.MediQueueWeb -C build . web
+if errorlevel 1 exit /b 1
+jar --create --file MediQueue.jar --main-class mediqueue.MediQueue -C build .
+if errorlevel 1 exit /b 1
+echo.
+echo Build complete.
+echo   Web version:     java -jar MediQueueWeb.jar   (then open http://localhost:8080)
+echo   Desktop version: java -jar MediQueue.jar
+Create build.sh next to it, for macOS and Linux:
+#!/bin/sh
+# Builds both versions of MediQueue (needs JDK 17 or newer):
+#   MediQueueWeb.jar - the web version: run it, then open http://localhost:8080
+#   MediQueue.jar    - the original desktop (Swing) version
+set -e
+cd "$(dirname "$0")"
+rm -rf build
+mkdir -p build
+javac --release 17 -encoding UTF-8 -d build \
+  src/MediQueueData.java src/MediQueueService.java src/MediQueueWeb.java src/Json.java src/MediQueue.java
+jar --create --file MediQueueWeb.jar --main-class mediqueue.MediQueueWeb -C build . web
+jar --create --file MediQueue.jar --main-class mediqueue.MediQueue -C build .
+echo
+echo "Build complete."
+echo "  Web version:     java -jar MediQueueWeb.jar   (then open http://localhost:8080)"
+echo "  Desktop version: java -jar MediQueue.jar"
+Both scripts do the same job: delete the old build folder, compile all five .java files, then pack two jars. --main-class records which class has main, so java -jar knows where to start. For MediQueueWeb.jar, -C build . adds the compiled classes and web adds the web pages. if errorlevel 1 exit /b 1 and set -e stop the script at the first error, so a failed compile never goes on to pack a jar.
+If you write build.sh on Windows, click CRLF in VS Code's bottom bar and choose LF before saving. A .sh file with Windows line endings fails on macOS and Linux.
+Step 10.2: The run scripts
+Create run.bat:
+@echo off
+rem Starts MediQueue Web. Open http://localhost:8080 in your browser, and close this window (or press Ctrl+C) to stop it.
+cd /d "%~dp0"
+java -jar MediQueueWeb.jar %*
+pause
+Create run.sh:
+#!/bin/sh
+# Starts MediQueue Web. Open http://localhost:8080 in your browser, and press Ctrl+C here to stop it.
+cd "$(dirname "$0")"
+exec java -jar MediQueueWeb.jar "$@"
+%* and "$@" pass on whatever you type after the script name, so .\run.bat 9090 and .\run.bat --lan work too. pause keeps the window open after the server stops, so you can read any error when you start it by double-clicking.
+Step 10.3: The project overview
+In the docs folder, create PROJECT-OVERVIEW.md:
+# Project Overview
+
+**Project:** MediQueue - Clinic Appointment & Queue System  
+**Technology:** Java (JDK 17+) backend on the JDK's built-in HTTP server; HTML, CSS and JavaScript frontend; local text-file storage  
+**Application type:** Web application (the original Java Swing desktop version is still included)
+
+MediQueue provides separate sign-in roles for clinic staff and patients. It includes appointment and queue workflows, doctor scheduling, and local data persistence. The web version runs with the JDK alone, without Tomcat, Maven, a database server or third-party libraries.
+
+## Architecture
+- **Browser:** `web/index.html`, `web/app.css`, `web/app.js` draw every screen and talk to the server.
+- **Web server and JSON API:** `src/MediQueueWeb.java` and `src/Json.java`.
+- **Clinic rules:** `src/MediQueueService.java`, moved out of the desktop app's button handlers.
+- **Data and storage:** `src/MediQueueData.java`, unchanged from the desktop version.
+- **Desktop app:** `src/MediQueue.java`, unchanged.
+
+## Build verification
+The source is compiled with `javac --release 17` and packaged into `MediQueueWeb.jar` (web) and `MediQueue.jar` (desktop).
+Step 10.4: The README
+Create README.md in the project folder. GitHub shows it on the project's front page.
+# MediQueue Web - Clinic Appointment & Queue System
+
+MediQueue, now running in a web browser. The Java code is the backend: a small web server that comes with the JDK answers the browser, the clinic rules are the same ones the desktop app uses, and the data is saved to the same two text files. No Tomcat, Maven, database or third-party libraries are needed, only the JDK.
+
+## Quick start
+
+1. Install **JDK 17 or newer**. Check it in a terminal with `java -version`.
+2. Open a terminal in this folder. In VS Code: **Terminal > New Terminal**.
+3. Start the server with `java -jar MediQueueWeb.jar`. On Windows you can also double-click `run.bat` (on macOS/Linux: `sh run.sh`).
+4. Open **http://localhost:8080** in your browser.
+5. To stop the server, press **Ctrl + C** in the terminal.
+
+## Sign-in accounts
+
+| Role | Username | Password |
+|---|---|---|
+| Admin (clinic staff) | `aldred` | `aldred06` |
+| Patient | `tiffany` | `tiffany012` |
+| Patient | `aj` | `aj32` |
+| Patient | `stephen` | `glovo456` |
+
+Patients can also create their own account with **New patient? Register**. These demo accounts are written in the source code, so this is a school/demo project, not a production login system.
+
+## How it works
+
+     Browser                            Java server (MediQueueWeb.jar)                   Saved files
+     -------                            ------------------------------                   -----------
+     web/index.html                     MediQueueWeb.java      receives each request
+     web/app.css     --- request --->     |                    and checks who is signed in
+     web/app.js      <---- JSON -----     v
+                                        MediQueueService.java  clinic rules: book, cancel,
+                                          |                    call next patient, ...
+                                          v
+                                        MediQueueData.java     lists + saving   ---> mediqueue-data.txt
+                                                                                ---> mediqueue-users.txt
+
+1. The browser loads the page (`index.html`, `app.css`, `app.js`) from the server.
+2. `app.js` asks the server for `/api/state`: everything the signed-in user's screens need. Then it draws the page.
+3. When you click a button, such as **Book Appointment**, `app.js` sends the form to the server, for example to `/api/book`.
+4. `MediQueueService` checks the same rules as the desktop app, and `MediQueueData` saves the change to the text files.
+5. The server answers with a message (the pop-up at the bottom of the screen) and the updated data, and the page redraws.
+
+## Project files
+
+| File | What it does | Where it came from |
+|---|---|---|
+| `src/MediQueueData.java` | Data models (appointments, queue, patients, schedules, accounts), password hashing, saving and loading the text files | Desktop project, **unchanged** |
+| `src/MediQueueService.java` | The clinic rules: sign in, register, reset password, book, cancel, confirm, queue, patients, schedules. Same checks and messages as the desktop app | Moved out of the desktop button handlers (`doLogin`, `doRegister`, `book`, ...) |
+| `src/MediQueueWeb.java` | The web server: sends the web pages, answers `/api/...` requests with JSON, remembers who is signed in | New |
+| `src/Json.java` | Turns Java maps and lists into JSON text for the browser | New |
+| `src/MediQueue.java` | The original Swing desktop app | Desktop project, **unchanged** |
+| `web/index.html`, `web/app.css`, `web/app.js`, `web/favicon.svg` | The screens in the browser, with the desktop app's colours and layout | New |
+| `build.bat`, `build.sh` | Build both `.jar` files | Updated |
+| `run.bat`, `run.sh` | Start the web version | New |
+| `MediQueueWeb.jar`, `MediQueue.jar` | Ready-to-run web and desktop versions | Built from the files above |
+
+## Building after you change something
+
+- **Changed a `.java` file?** Stop the server, run `build.bat` (Windows) or `sh build.sh` (macOS/Linux), then start it again.
+- **Changed a file in `web/`?** Just refresh the browser. When you start the server from this folder, it reads the `web` folder directly. (Started from anywhere else, it uses the copy packed inside the `.jar`.)
+
+Or compile by hand:
+
+    javac --release 17 -encoding UTF-8 -d build src/MediQueueData.java src/MediQueueService.java src/MediQueueWeb.java src/Json.java src/MediQueue.java
+    java -cp build mediqueue.MediQueueWeb
+
+## Options
+
+- **Another port:** `java -jar MediQueueWeb.jar 9090`, then open http://localhost:9090
+- **Open it on your phone** (same Wi-Fi): `java -jar MediQueueWeb.jar --lan`. The server prints the address to type on the phone, such as `http://192.168.1.5:8080`. Windows may ask to let Java through the firewall; allow it on private networks. Anyone on that network can then open the site, so use made-up data only.
+
+## The API (the addresses the page uses)
+
+| Address | Who | What it does |
+|---|---|---|
+| `GET /api/state` | anyone | The signed-in user's screen data (`null` when nobody is signed in) |
+| `POST /api/login`, `/api/register`, `/api/reset`, `/api/logout` | anyone | Sign in, create a patient account, reset a password, sign out |
+| `POST /api/book` | patient | Book an appointment (`doctor`, `date`, `time`) |
+| `POST /api/cancel` | patient (own) or staff (any) | Cancel an appointment (`id`) |
+| `POST /api/confirm` | staff | Confirm a scheduled appointment (`id`) |
+| `POST /api/queue/next`, `/api/queue/call`, `/api/queue/complete` | staff | Call the next patient, call a patient, finish a consultation |
+| `POST /api/patients/save`, `/api/patients/delete` | staff | Add, edit or delete a patient record |
+| `POST /api/schedules/add`, `/api/schedules/toggle`, `/api/schedules/remove` | staff | Manage doctor schedules |
+
+POST requests are sent as forms (`name=value&...`) with the header `X-MediQueue: 1`. Answers are JSON, for example `{"ok":true,"message":"Appointment confirmed.","state":{...}}` or `{"error":"That slot is already booked. Pick another time."}`.
+
+## What is different from the desktop version
+
+Same features, rules and messages. A few things changed because anyone can open a website:
+
+- Every choice (doctor, date, time slot) is checked on the server, not only limited by the drop-down lists.
+- In the queue, patients see their own full name and other patients as "Juan C." Staff still see full names.
+- Registering with the exact name of an existing clinic record requires the contact number on that record. Without this, anyone could register as "Juan Dela Cruz" and see his appointments.
+- The queue screens update by themselves every 15 seconds, so patients see the queue move when staff call the next patient.
+- A sign-in lasts 12 hours, or until the server restarts. Resetting a password signs that account out everywhere.
+
+## The desktop version is still included
+
+`java -jar MediQueue.jar` starts the original Swing app. It uses the same data files, so you can switch between the two, but do not run both at the same time: each one keeps its own copy of the data in memory, and the last one to save wins.
+
+## Troubleshooting
+
+- **`'java' is not recognized`**: the JDK is not installed, or not on your PATH.
+- **`'jar' is not recognized` while building**: the Oracle installer puts only `java` and `javac` on your PATH. Add the JDK's `bin` folder (for example `C:\Program Files\Java\jdk-26\bin`) to PATH, then open a new terminal.
+- **"Port 8080 is already in use"**: another program (or another copy of MediQueue Web) is using it. Close it, or run `java -jar MediQueueWeb.jar 8081`.
+- **The build fails on Windows because a file is in use**: stop the server first, then build.
+- **The browser shows an old version of a page**: press **Ctrl + F5**.
+
+## Limitations
+
+- The demo accounts above get their passwords reset every time the server starts (see `loadAccounts()` in `MediQueueData.java`).
+- No HTTPS. That is fine on your own computer; on a shared network, other people could read the traffic.
+- There is no limit on repeated sign-in or password-reset attempts.
+- As in the desktop version, nothing adds new patients to the queue; it starts with the four sample patients.
+- All data is kept in two text files: fine for a demo, not for a real clinic.
+Checkpoint 10
+In VS Code's terminal, in the project folder, first check that the jar tool is on your PATH:
+jar --version
+If PowerShell says jar is not recognized, Oracle's installer put only java and javac on your PATH. Find your JDK folder with java -XshowSettings:properties -version (look for java.home), then add its bin folder for this terminal, for example:
+$env:Path = "C:\Program Files\Java\jdk-26\bin;" + $env:Path
+Then build (on macOS or Linux: sh build.sh):
+.\build.bat
+•☐ The build ends with "Build complete.", and MediQueueWeb.jar and MediQueue.jar appear in the project folder.
+•☐ .\run.bat starts the server, and http://localhost:8080 works as before. Stop it with Ctrl+C; when Windows asks "Terminate batch job (Y/N)?", type Y.
+•☐ With the server stopped, java -jar MediQueue.jar opens the original desktop app with the same data. Close it before you start the web server again: each app keeps its own copy of the data in memory, and the last one to save wins.
+To check that the web jar runs on its own, open a second terminal (the + in the terminal panel) and run:
+mkdir $HOME\mq-test
+copy MediQueueWeb.jar $HOME\mq-test
+cd $HOME\mq-test
+java -jar MediQueueWeb.jar 9090
+•☐ The banner says "Web pages from: the copy inside the .jar file", and http://localhost:9090 shows the app.
+•☐ Stop it with Ctrl+C. That folder got its own data files, so delete mq-test when you are done.
+Phase 11: Final test, troubleshooting and GitHub
+The app is finished. This phase runs one last pass over everything, collects fixes for the problems beginners hit most, and puts the project on GitHub.
+Step 11.1: Final test from fresh data
+Stop the server. In the project folder, delete mediqueue-data.txt and mediqueue-users.txt. On the next start the app creates the sample data again, with today's appointments and only the four demo accounts. Start it with .\run.bat.
+As a patient (register a new account):
+•☐ New patient? Register signs you in and greets you by first name.
+•☐ Book Appointment adds the appointment to My Appointments and marks the day on the calendar. Booking the same slot again is refused.
+•☐ Cancel asks twice, then shows "Cancelled".
+•☐ Queue Status shows other patients by short names, such as "Carlo S.".
+•☐ Log out, use Forgot password? with your contact number, and sign in with the new password.
+As staff (aldred / aldred06):
+•☐ Confirm and Cancel work on Appointments.
+•☐ Call Next Patient, Call and Complete move the queue and update the counters.
+•☐ Patients: add, search, edit and delete a patient. An age of 999 is refused.
+•☐ Schedules: add a schedule, then Mark Off, Mark On and Remove.
+Both together:
+•☐ With a patient in a private window beside the staff window, the patient's Queue Status follows the staff's changes within 15 seconds.
+•☐ At phone size, the sidebar hides behind a menu button and nothing scrolls sideways.
+•☐ After a server restart everyone is signed out, but the appointments, queue and patients are as you left them.
+•☐ With the server stopped, java -jar MediQueue.jar shows the same data in the desktop app.
+Step 11.2: Troubleshooting
+Problem	Fix
+'java' or 'javac' is not recognized	Install JDK 17 or newer, then close and reopen VS Code so its terminal sees the new PATH. Check with java -version and javac -version.
+'jar' is not recognized	Add the JDK's bin folder to PATH for good: search Windows for "environment variables", open Edit environment variables for your account, select Path, click Edit, then New, paste the folder (for example C:\Program Files\Java\jdk-26\bin), click OK twice, and restart VS Code.
+javac: class, interface, enum, or record expected	A pasted part landed below the class's last }. Move it above.
+javac: cannot find symbol	A step is missing or a name is misspelled. Compare the file with the steps of its phase.
+"Port 8080 is already in use"	Another copy is still running, perhaps in another terminal or a run.bat window. Close it, or start on another port: java -jar MediQueueWeb.jar 8081.
+http://localhost:8080 says "Not found"	The server cannot find index.html. Start it from the project folder, or use the jar. The banner's "Web pages from" line shows where it looks.
+The page stays on "Loading MediQueue…" or is blank	app.js has an error. Press F12 and open Console: it names the line. A SyntaxError is usually a missing } or ) where two steps meet; "is not defined" means a step is missing.
+Changes to app.js or app.css do not show	Save the file and press Ctrl+F5. A jar started from another folder uses its own copy of the pages: rebuild it.
+"Your session has ended. Please sign in again."	Expected after a server restart or after 12 hours, because sign-ins are kept in memory. Sign in again.
+"Invalid username or password." for a demo account	The demo passwords go back to the ones in the README at every start. For your own account, use Forgot password?.
+The phone cannot open the --lan address	Use the same Wi-Fi, and start the server with --lan. In Windows Security, open Firewall & network protection, then Allow an app through firewall, click Change settings and tick Private for Java ("Java(TM) Platform SE binary" or "OpenJDK Platform binary"). In Settings, your Wi-Fi's network profile must be Private. Some school and guest networks block devices from reaching each other.
+sh build.sh fails with \r errors	The file has Windows line endings. In VS Code, click CRLF in the bottom bar, choose LF, and save.
+The desktop and web apps show different data	They ran at the same time, and the last one to save won. Run one at a time.
+Step 11.3: Push to GitHub
+Install Git. Check with git --version. If it is not recognized, install Git from https://git-scm.com/downloads and reopen VS Code. Then tell Git who you are, once per computer:
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+Make an empty repository. On github.com, click + at the top right, then New repository. Name it MediQueue-Web, choose Public or Private, leave the README, .gitignore and license options off (the project has its own), and click Create repository.
+Upload the project. In the project folder, run these, with your GitHub username in the address:
+git init
+git add .
+git status
+git commit -m "MediQueue Web: clinic appointments and queue in the browser"
+git branch -M main
+git remote add origin https://github.com/YOUR-USERNAME/MediQueue-Web.git
+git push -u origin main
+git status lists the files about to be saved. build/, mediqueue-data.txt and mediqueue-users.txt must not be in the list: the .gitignore from Phase 1 keeps the compiled classes, patient records and password hashes off GitHub. The two .jar files are included on purpose, so others can run the app without building it. The first push opens a browser window to sign in to GitHub.
+After later changes, rebuild so the jars match the code, then:
+git add .
+git commit -m "Say what you changed"
+git push
+Checkpoint 11
+•☐ Every box in Step 11.1 is ticked.
+•☐ Your repository page on GitHub lists the files and shows the README with the sign-in accounts.
+•☐ build/, mediqueue-data.txt and mediqueue-users.txt are not on GitHub.
+That is the whole build: the desktop app's rules and data, now running as a website.
+Appendix: API reference and what changed from the desktop version
+A. How the page talks to the server
+•Every address starts with /api/. The page reads with GET and changes things with POST.
+•A POST body is a form (name=value&name2=value2) and must carry the header X-MediQueue: 1, or the server answers 403 "Request blocked." Other websites cannot add that header, so they cannot send requests through your signed-in browser.
+•Signing in sets the cookie mq_session (HttpOnly, SameSite=Strict). The browser sends it back with every request, and the server looks the token up to know who you are. Sign-ins last 12 hours and live in memory, so a restart signs everyone out.
+•A change answers {"ok":true,"message":"...","tone":"green","state":{...}}: the pop-up text, its colour, and fresh screen data, so the page redraws without a second request. A refusal answers {"error":"..."} with one of these status codes:
+Code	Meaning	Example
+200	Done	"Appointment confirmed."
+400	A clinic rule said no	"That slot is already booked. Pick another time."
+401	Not signed in	"Please sign in first."
+403	Wrong role, or the X-MediQueue header is missing	"Only clinic staff can do that."
+404	No such address or record	"Appointment not found."
+413	The form is over 16 KB	"That request is too large."
+500	A bug on the server; the terminal shows the details	"Something went wrong on the server."
+B. Every address
+Address	Who	Form fields	Message on success
+GET /api/state	anyone	none	none; state is null when nobody is signed in
+POST /api/login	anyone	role (admin or patient), username, password	"Welcome, Mark!" (the first name)
+POST /api/register	anyone	name, contact, username, password, password2	"Welcome, ...!"
+POST /api/reset	anyone	username, contact, password, password2	"Password updated. You can now sign in."
+POST /api/logout	anyone	none	"You have been logged out."
+POST /api/book	patient	doctor, date (2026-10-23), time (09:30)	"Booked with ... on ... at ..."
+POST /api/cancel	patient (own) or staff (any)	id (such as A-1003)	"Appointment A-1003 has been cancelled."
+POST /api/confirm	staff	id	"Appointment confirmed."
+POST /api/queue/next	staff	none	"Now calling Carlo Santos"
+POST /api/queue/call	staff	index, name	"Now calling ..."
+POST /api/queue/complete	staff	index, name	"Consultation completed for Maria Lopez."
+POST /api/patients/save	staff	id (empty for a new patient), name, age, gender, contact	"Patient saved."
+POST /api/patients/delete	staff	id (such as P-003)	"Patient deleted."
+POST /api/schedules/add	staff	doctor, date, slots	"Schedule added."
+POST /api/schedules/toggle	staff	id	"Schedule marked available." or "Schedule marked not available."
+POST /api/schedules/remove	staff	id	"Schedule removed."
+For the queue, index is the row's place in state.queue.rows and name must match it. If someone else changed the queue first, the server answers "The queue has changed. Please try again." instead of calling the wrong patient.
+C. What is inside state
+Who	Keys
+Everyone	user (name, role), now (today's date and the time), fee, doctors
+Patients	profile, appointments (their own), upcoming, queue (myNumber, and rows with short names), booking (the doctor, date and time choices)
+Clinic staff	stats, summary, counters, appointments (all), queue (rows with full names), patients, schedules, scheduleOptions
+stateFor() in MediQueueService.java builds it from the same lists the desktop's w...() methods read.
+D. What changed from the desktop version
+Part	Desktop (MediQueue.java)	Web
+Screens	Swing panels from buildBody() and the w...() methods	app.js builds HTML with h(), and pageBody() picks the page
+Clinic rules	Inside the button handlers (doLogin, doRegister, doReset, book, ...)	MediQueueService.java, reached through /api/...
+Data and saving	MediQueueData.java and two text files	The same file, unchanged, and the same two text files
+Who uses it	One person at one window	Many browsers at once: a cookie tells them apart, and one request at a time touches the data
+Pop-up messages	A toast drawn in Swing	The #toast box in index.html, filled by toast()
+Screen size	A desktop window	Phone to desktop; below 860px the sidebar becomes a menu
+Features, rules and messages are the same. These rules are new, because anyone who can reach a website can try things a desktop window never allowed:
+•Every input is checked on the server. A doctor, date or time that is not in the lists is refused, even if someone edits the page.
+•Patients see other patients in the queue as "Juan C."; staff still see full names.
+•Registering with the exact name of an existing clinic record needs the contact number on that record, so nobody can register as "Juan Dela Cruz" and see his appointments.
+•A wrong username takes as long to check as a wrong password, so the timing does not reveal which usernames exist.
+•Resetting a password signs that account out on every browser.
+•Sign-ins expire after 12 hours. Page scripts cannot read the cookie (HttpOnly), and other sites cannot use it (SameSite=Strict).
+•The server sends security headers (Content-Security-Policy, X-Frame-Options), so the pages run only their own scripts and other sites cannot show them inside a frame.
+•The page refreshes every 15 seconds, so the queue moves without a reload.

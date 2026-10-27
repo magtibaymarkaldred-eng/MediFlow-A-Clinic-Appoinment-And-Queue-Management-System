@@ -1,0 +1,4 @@
+build/
+mediqueue.db
+mediqueue.db-shm
+mediqueue.db-wal
